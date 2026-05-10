@@ -176,10 +176,18 @@ async function handleUpdate(platform, req, res) {
                 await pool.query('UPDATE users SET photo_id = $1, step = $2 WHERE id = $3', [photoId, 'CHECK_JOIN', user.id]);
                 
                 // پیام عضویت در کانال
+                const channelUrl = platform === 'telegram'
+                    ? 'https://t.me/CROWCHAT_1'
+                    : 'https://ble.ir/CROWCHAT_1';
+
+                const backupBotUrl = platform === 'telegram'
+                    ? 'https://t.me/CROW2_CHATBOT'
+                    : 'https://ble.ir/CROW2_CHATBOT';
+
                 const joinKeyboard = {
                     inline_keyboard: [
-                        [{ text: "📢 عضویت در کانال اطلاع‌رسانی", url: "https://t.me/YourChannelID" }],
-                        [{ text: "🤖 عضویت در ربات زاپاس", url: "https://t.me/YourBackupBotID" }],
+                        [{ text: "📢 کانال اطلاع‌رسانی", url: channelUrl }],
+                        [{ text: "🤖 ربات زاپاس", url: backupBotUrl }],
                         [{ text: "✅ بررسی عضویت", callback_data: "check_join" }]
                     ]
                 };
