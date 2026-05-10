@@ -20,6 +20,97 @@ const BALE_API = `https://tapi.bale.ai/bot${BALE_TOKEN}`;
 const CHANNEL_USERNAME = '@CROWCHAT_1';
 const SECOND_CHANNEL_USERNAME = '@ADS_LINK2';
 
+// دیکشنری تیپ‌های مکمل MBTI
+const mbtiPairs = {
+    'INTJ': 'ENFP', 'ENFP': 'INTJ',
+    'INFJ': 'ENTP', 'ENTP': 'INFJ',
+    'INFP': 'ENFJ', 'ENFJ': 'INFP',
+    'INTP': 'ENTJ', 'ENTJ': 'INTP',
+    'ISFJ': 'ESTP', 'ESTP': 'ISFJ',
+    'ISTJ': 'ESFP', 'ESFP': 'ISTJ',
+    'ISFP': 'ESFJ', 'ESFJ': 'ISFP',
+    'ISTP': 'ESTJ', 'ESTJ': 'ISTP'
+};
+
+// متون ثابت
+const MBTI_INFO_TEXT = `E / I: برون‌گرا / درون‌گرا
+S / N: حسی و واقع‌گرا / شهودی و آینده‌نگر
+T / F: منطقی / احساسی و ارزش‌محور
+J / P: منظم و برنامه‌ریز / منعطف و بداهه‌پرداز
+
+انواع ۱۶ تیپ شخصیتی MBTI:
+۱. تحلیل‌گرها
+INTJ: استراتژیست، مستقل، آینده‌نگر
+INTP: متفکر، کنجکاو، اهل تحلیل
+ENTJ: فرمانده، هدف‌گرا، مدیر
+ENTP: ایده‌پرداز، بحث‌دوست، خلاق
+
+۲. دیپلمات‌ها
+INFJ: عمیق، آرمان‌گرا، حامی
+INFP: خیال‌پرداز، ارزش‌محور، حساس
+ENFJ: رهبر اجتماعی، الهام‌بخش، حمایتگر
+ENFP: پرانرژی، خلاق، اجتماعی
+
+۳. نگهبان‌ها
+ISTJ: مسئولیت‌پذیر، دقیق، قابل اعتماد
+ISFJ: مهربان، وفادار، مراقب
+ESTJ: مدیر، منظم، عمل‌گرا
+ESFJ: اجتماعی، حمایتگر، هماهنگ‌کننده
+
+۴. کاوشگرها
+ISTP: فنی، مستقل، آرام
+ISFP: هنرمند، لطیف، آزاد
+ESTP: جسور، عمل‌گرا، هیجان‌طلب
+ESFP: شاد، اجتماعی، لحظه‌محور
+
+نکته مهم: سازگاری فقط به تیپ شخصیتی بستگی ندارد. بلوغ عاطفی، سبک ارتباط، ارزش‌ها، شرایط زندگی و مهارت حل تعارض خیلی مهم‌ترند. اما در MBTI معمولاً بعضی ترکیب‌ها راحت‌تر با هم کنار می‌آیند.
+
+سازگاری‌های رایج و خوب:
+INTJ با: ENFP، ENTP، INFJ، ENTJ
+INTP با: ENTJ، ENTP، INFJ، ENFP
+ENTJ با: INTP، INTJ، ENFP، ENTP
+ENTP با: INFJ، INTJ، ENFP، INTP
+INFJ با: ENTP، ENFP، INTJ، INFP
+INFP با: ENFJ، INFJ، ENFP، ISFP
+ENFJ با: INFP، ISFP، INFJ، ENFP
+ENFP با: INTJ، INFJ، INFP، ENTP
+ISTJ با: ESFJ، ESTJ، ISFJ، ISTP
+ISFJ با: ESTP، ESFP، ISTJ، ESFJ
+ESTJ با: ISTJ، ISFJ، ENTJ، ESFJ
+ESFJ با: ISFP، ISTJ، ISFJ، ESTJ
+ISTP با: ESTJ، ESFJ، ISTJ، ISFP
+ISFP با: ENFJ، ESFJ، INFP، ISTP
+ESTP با: ISFJ، ISTJ، ESFP، ESTJ
+ESFP با: ISFJ، ISTJ، ESFJ، ESTP
+
+جمع‌بندی مکمل‌های طلایی:
+INTJ + ENFP
+INFJ + ENTP
+INFP + ENFJ
+INTP + ENTJ
+ISFJ + ESTP
+ISTJ + ESFP
+ISFP + ESFJ
+ISTP + ESTJ`;
+
+const MBTI_BUY_TEXT = `تا حالا برات سوال شده چرا بعضی تصمیم‌ها رو سریع می‌گیری، چرا از بعضی جمع‌ها انرژی می‌گیری یا چرا با بعضی آدم‌ها راحت‌تر ارتباط برقرار می‌کنی؟
+
+تست MBTI بهت کمک می‌کنه تیپ شخصیتی خودت رو بشناسی و بفهمی در ارتباطات، کار، تصمیم‌گیری و رشد فردی چه الگوهایی داری.
+
+در گزارش نهایی دریافت می‌کنی:
+- معرفی تیپ شخصیتی تو
+- تحلیل کامل رفتارها و ترجیحاتت
+- نقاط قوت و چالش‌های شخصیتی
+- سبک ارتباطی در رابطه و کار
+- تیپ‌های سازگار با تو
+- پیشنهادهای کاربردی برای رشد فردی و شغلی
+
+زمان انجام: ۱۰ تا ۱۵ دقیقه
+هزینه: 89,000 تومان
+
+برای شروع تست، پرداخت را انجام بده. بعد از پرداخت، لینک تست برایت فعال می‌شود.`;
+
+
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
@@ -45,23 +136,16 @@ async function initDB() {
             );
         `);
 
-        // ستون‌های قبلی
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS partner_id INTEGER;`);
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS job VARCHAR(100);`);
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS photo_id VARCHAR(255);`);
-        
-        // ستون‌های جدید پروفایل
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_anon INTEGER DEFAULT 1;`);
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS gender_edit_count INTEGER DEFAULT 0;`);
-
-        // ستون‌های مربوط به یوزرنیم داخلی و تیپ شخصیتی
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS personality_type VARCHAR(20);`);
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS internal_username VARCHAR(20);`);
         
-        // مقداردهی یوزرنیم داخلی برای کاربران قدیمی که ندارند
         await pool.query(`UPDATE users SET internal_username = 'USER_' || id || 'X' WHERE internal_username IS NULL;`);
 
-        // جدول‌های جدید برای روابط کاربری
         await pool.query(`
             CREATE TABLE IF NOT EXISTS followers (
                 follower_id INTEGER,
@@ -77,7 +161,7 @@ async function initDB() {
             );
         `);
 
-        console.log("Database Ready with New Features (Personality & In-Chat UI)!");
+        console.log("Database Ready with Advanced MBTI Features!");
     } catch (error) {
         console.error("DB Error:", error.message);
     }
@@ -265,7 +349,6 @@ async function handleUpdate(platform, req, res) {
 
             const user = userResult.rows[0];
 
-            // بررسی کلیک روی یوزرنیم داخلی در پیام‌ها (قابلیت عمومی)
             if (text && (text.startsWith('/USER_') || text.startsWith('USER_'))) {
                 const targetUsername = text.startsWith('/') ? text.substring(1) : text;
                 let pRes = await pool.query('SELECT * FROM users WHERE internal_username = $1', [targetUsername]);
@@ -311,7 +394,6 @@ async function handleUpdate(platform, req, res) {
             else if (user.step === 'CHECK_JOIN' && text) {
                 await sendMessage(platform, chatId, "⚠️ لطفاً ابتدا در کانال‌ها عضو شوید:", getJoinKeyboard(platform));
             }
-
             else if (user.step === 'EDIT_USERNAME' && text) {
                 const persianRegex = /^[\u0600-\u06FF\s]+$/;
                 if (!persianRegex.test(text)) {
@@ -368,11 +450,12 @@ async function handleUpdate(platform, req, res) {
                 else if (text === "تست شخصیتی 🧠") {
                     const kb = {
                         inline_keyboard: [
-                            [{ text: "INTJ 🧠", callback_data: "mbti_INTJ" }, { text: "ENFP 🌟", callback_data: "mbti_ENFP" }],
-                            [{ text: "ISTP 🛠", callback_data: "mbti_ISTP" }, { text: "ESFJ 🤝", callback_data: "mbti_ESFJ" }]
+                            [{ text: "توضیحات تیپ شخصیتی 📖", callback_data: "mbti_info" }],
+                            [{ text: "انتخاب تیپ شخصیتی 🎯", callback_data: "mbti_select_menu" }],
+                            [{ text: "تیپمو نمیدونم میخوام تستشو بدم 🛒", callback_data: "mbti_buy_test" }]
                         ]
                     };
-                    await sendMessage(platform, chatId, "📝 به آزمون تیپ شخصیتی خوش آمدید!\n\n(در این نسخه می‌توانید مستقیماً تیپ خود را برای نمایش در پروفایل انتخاب کنید):", kb);
+                    await sendMessage(platform, chatId, "بخش شخصیت‌شناسی MBTI:\nیک گزینه را انتخاب کنید:", kb);
                 }
                 else if (text === "جستجوی ویژه 🔍") {
                     const kb = {
@@ -394,11 +477,10 @@ async function handleUpdate(platform, req, res) {
                     await sendMessage(platform, chatId, "🛑 جستجو لغو شد.");
                     await sendMainMenu(platform, chatId);
                 } else {
-                    await sendMessage(platform, chatId, "⏳ هنوز در حال جستجو هستیم...");
+                    await sendMessage(platform, chatId, "⏳ هنوز در حال جستجو هستیم... (برای لغو دکمه زیر را بزنید)");
                 }
             }
             else if (user.step === 'CHATTING' && text) {
-                // مدیریت دکمه‌های کیبورد در حال چت
                 if (text === "پایان چت ❌" || text === "پایان چت") {
                     const kb = {
                         inline_keyboard: [
@@ -415,7 +497,6 @@ async function handleUpdate(platform, req, res) {
                             let profileStr = `👤 **پروفایل مخاطب**\n\n📝 نام: ${partner.username}\n⚧ جنسیت: ${partner.gender}\n🎂 سن: ${partner.age}\n📍 مکان: ${partner.province}\n🧠 تیپ شخصیتی: ${partner.personality_type || 'ثبت نشده'}\n\nبرای مشاهده کامل پروفایل بزنید: /${partner.internal_username}`;
                             await sendMessage(platform, chatId, profileStr);
                             
-                            // ارسال نوتیفیکیشن به طرف مقابل
                             await sendMessage(partner.platform, partner.chat_id, `👀 ${user.username} ( /${user.internal_username} ) پروفایل شما را مشاهده کرد.`);
                         }
                     }
@@ -466,7 +547,6 @@ async function handleUpdate(platform, req, res) {
                     await handleJoinCheck(platform, chatId, user.id);
                 }
                 
-                // مدیریت دکمه‌های تاییدیه خروج چت
                 else if (data === 'confirm_end_chat') {
                     if (user.step === 'CHATTING') {
                         await pool.query('UPDATE users SET step = $1, partner_id = NULL WHERE id = $2', ['REGISTERED', user.id]);
@@ -488,11 +568,28 @@ async function handleUpdate(platform, req, res) {
                     await sendMessage(platform, chatId, "✅ انصراف از خروج. به چت خود ادامه دهید...");
                 }
 
-                // ثبت تیپ شخصیتی (آزمایشی)
-                else if (data.startsWith('mbti_')) {
-                    const type = data.replace('mbti_', '');
+                // بخش جدید تیپ شخصیتی
+                else if (data === 'mbti_info') {
+                    await sendMessage(platform, chatId, MBTI_INFO_TEXT);
+                }
+                else if (data === 'mbti_select_menu') {
+                    const types = ['INTJ', 'INTP', 'ENTJ', 'ENTP', 'INFJ', 'INFP', 'ENFJ', 'ENFP', 'ISTJ', 'ISFJ', 'ESTJ', 'ESFJ', 'ISTP', 'ISFP', 'ESTP', 'ESFP'];
+                    const kb = createInlineKeyboard(types, 'mbtiset_', 4); // کیبورد ۴ در ۴
+                    await sendMessage(platform, chatId, "تیپ شخصیتی خود را از لیست زیر انتخاب کنید:", kb);
+                }
+                else if (data.startsWith('mbtiset_')) {
+                    const type = data.replace('mbtiset_', '');
                     await pool.query('UPDATE users SET personality_type = $1 WHERE id = $2', [type, user.id]);
                     await sendMessage(platform, chatId, `✅ تیپ شخصیتی (${type}) در پروفایل شما ثبت شد.`);
+                }
+                else if (data === 'mbti_buy_test') {
+                    const kb = {
+                        inline_keyboard: [
+                            [{ text: "پرداخت و شروع تست 💳", url: "https://t.me/crow_support" }], // لینک درگاه را بعدا جایگزین کنید
+                            [{ text: "پشتیبانی 🎧", url: "https://t.me/crow_support" }]
+                        ]
+                    };
+                    await sendMessage(platform, chatId, MBTI_BUY_TEXT, kb);
                 }
 
                 else if (data === 'prof_edit_menu') {
@@ -542,13 +639,13 @@ async function handleUpdate(platform, req, res) {
                     }
                 }
 
-                // مدیریت جستجوی ویژه
+                // جستجوی ویژه و اعمال دکمه لغو برای همه موارد
                 else if (data.startsWith('advsearch_')) {
                     const searchMode = data.split('_')[1];
                     
                     if (searchMode === 'personality') {
                         if (!user.personality_type) {
-                            await sendMessage(platform, chatId, "❌ شما هنوز تست تیپ شخصیتی را تکمیل نکرده‌اید. لطفاً ابتدا از منوی اصلی اقدام کنید.");
+                            await sendMessage(platform, chatId, "❌ شما هنوز تیپ شخصیتی خود را ثبت نکرده‌اید. لطفاً ابتدا از منوی تست شخصیتی اقدام کنید.");
                             return;
                         }
                     }
@@ -564,8 +661,25 @@ async function handleUpdate(platform, req, res) {
                 else if (data.startsWith('dosearch_')) {
                     const parts = data.split('_');
                     const searchMode = parts[1];
-                    const targetGender = parts[2];
-                    await sendMessage(platform, chatId, `🔍 در حال جستجوی کاربران (${searchMode}) با فیلتر جنسیت (${targetGender})...\n\n(کوئری جستجوی دقیق در بخش‌های بعدی افزوده خواهد شد)`);
+                    const targetGenderCode = parts[2];
+                    
+                    let targetGenderText = "همه";
+                    if(targetGenderCode === 'male') targetGenderText = "پسر";
+                    if(targetGenderCode === 'female') targetGenderText = "دختر";
+
+                    let msgText = `🔍 در حال جستجوی کاربران (${searchMode}) با فیلتر جنسیت (${targetGenderText})...`;
+
+                    // منطق مکمل در صورت جستجوی شخصیتی
+                    if (searchMode === 'personality') {
+                        const myType = user.personality_type;
+                        const targetType = mbtiPairs[myType];
+                        msgText = `🔍 شما تیپ ${myType} هستید. در حال جستجو برای تیپ مکمل شما ( ${targetType} ) با فیلتر جنسیت (${targetGenderText})...`;
+                    }
+
+                    // تغییر وضعیت به جستجو و ارسال کیبورد لغو
+                    await pool.query('UPDATE users SET step = $1 WHERE id = $2', ['SEARCHING', user.id]);
+                    const cancelKb = { keyboard: [[{ text: "❌ انصراف از جستجو" }]], resize_keyboard: true };
+                    await sendMessage(platform, chatId, msgText, cancelKb);
                 }
             }
         }
@@ -578,7 +692,7 @@ app.post('/webhook/telegram', (req, res) => handleUpdate('telegram', req, res));
 app.post('/webhook/bale', (req, res) => handleUpdate('bale', req, res));
 
 app.get('/', (req, res) => {
-    res.send('Bot Server is Running! (Personality, In-Chat Keyboard & Internal Username Added)');
+    res.send('Bot Server is Running! (Advanced MBTI Search & Cancel Features Added)');
 });
 
 app.listen(PORT, () => {
