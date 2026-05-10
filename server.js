@@ -50,9 +50,16 @@ async function initDB() {
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS job VARCHAR(100);`);
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS photo_id VARCHAR(255);`);
         
-        // ستون‌های جدید برای تنظیمات پروفایل
+        // ستون‌های جدید پروفایل
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_anon INTEGER DEFAULT 1;`);
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS gender_edit_count INTEGER DEFAULT 0;`);
+
+        // ستون‌های مربوط به یوزرنیم داخلی و تیپ شخصیتی
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS personality_type VARCHAR(20);`);
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS internal_username VARCHAR(20);`);
+        
+        // مقداردهی یوزرنیم داخلی برای کاربران قدیمی که ندارند
+        await pool.query(`UPDATE users SET internal_username = 'USER_' || id || 'X' WHERE internal_username IS NULL;`);
 
         // جدول‌های جدید برای روابط کاربری
         await pool.query(`
@@ -70,7 +77,7 @@ async function initDB() {
             );
         `);
 
-        console.log("Database Ready with New Features!");
+        console.log("Database Ready with New Features (Personality & In-Chat UI)!");
     } catch (error) {
         console.error("DB Error:", error.message);
     }
@@ -86,6 +93,10 @@ function toEnglishDigits(str) {
     }).join('');
 }
 
+function generateInternalUsername() {
+    return 'USER_' + Math.random().toString(36).substring(2, 9).toUpperCase();
+}
+
 async function sendMessage(platform, chatId, text, replyMarkup = null) {
     const url = platform === 'telegram' ? TELEGRAM_API : BALE_API;
     const payload = { chat_id: chatId, text: text };
@@ -97,7 +108,6 @@ async function sendMessage(platform, chatId, text, replyMarkup = null) {
     }
 }
 
-// تابع جدید برای ارسال عکس
 async function sendPhoto(platform, chatId, photoId, caption, replyMarkup = null) {
     const url = platform === 'telegram' ? TELEGRAM_API : BALE_API;
     const payload = { chat_id: chatId, photo: photoId, caption: caption };
@@ -106,7 +116,6 @@ async function sendPhoto(platform, chatId, photoId, caption, replyMarkup = null)
         await axios.post(`${url}/sendPhoto`, payload);
     } catch (error) {
         console.error(`Send Photo Error (${platform}):`, error.response?.data || error.message);
-        // Fallback: اگر ارسال عکس خطا داد، حداقل متن را بفرستد
         await sendMessage(platform, chatId, caption, replyMarkup);
     }
 }
@@ -196,7 +205,6 @@ async function handleJoinCheck(platform, chatId, userId) {
     await sendMainMenu(platform, chatId);
 }
 
-// تابع جدید برای نمایش پروفایل
 async function showProfile(user, platform, chatId) {
     const anonStatus = user.receive_anon === 1 ? 'فعال ✅' : 'غیرفعال ❌';
     let caption = `👤 **پروفایل شما**\n\n`;
@@ -204,8 +212,10 @@ async function showProfile(user, platform, chatId) {
     caption += `⚧ جنسیت: ${user.gender}\n`;
     caption += `🎂 سن: ${user.age}\n`;
     caption += `📍 مکان: ${user.province} - ${user.city}\n`;
-    caption += `💼 شغل: ${user.job || 'ثبت نشده'}\n\n`;
-    caption += `🆔 شناسه کاربری: ${user.id}`;
+    caption += `💼 شغل: ${user.job || 'ثبت نشده'}\n`;
+    caption += `🧠 تیپ شخصیتی: ${user.personality_type || 'نامشخص (از منو تست بده)'}\n\n`;
+    caption += `🆔 شناسه کاربری: ${user.id}\n`;
+    caption += `🔑 یوزرنیم داخلی: /${user.internal_username}`;
 
     const kb = {
         inline_keyboard: [
@@ -246,13 +256,28 @@ async function handleUpdate(platform, req, res) {
             let userResult = await pool.query('SELECT * FROM users WHERE chat_id = $1 AND platform = $2', [chatId, platform]);
 
             if (userResult.rows.length === 0) {
-                await pool.query('INSERT INTO users (chat_id, platform, step) VALUES ($1, $2, $3)', [chatId, platform, 'ASK_GENDER']);
+                const intUsername = generateInternalUsername();
+                await pool.query('INSERT INTO users (chat_id, platform, step, internal_username) VALUES ($1, $2, $3, $4)', [chatId, platform, 'ASK_GENDER', intUsername]);
                 const keyboard = { inline_keyboard: [[{ text: "پسر هستم 👦", callback_data: "gender_boy" }, { text: "دختر هستم 👧", callback_data: "gender_girl" }]] };
                 await sendMessage(platform, chatId, "سلام! به ربات چت ناشناس خوش اومدی.\nلطفاً جنسیت خودت رو انتخاب کن:", keyboard);
                 return;
             }
 
             const user = userResult.rows[0];
+
+            // بررسی کلیک روی یوزرنیم داخلی در پیام‌ها (قابلیت عمومی)
+            if (text && (text.startsWith('/USER_') || text.startsWith('USER_'))) {
+                const targetUsername = text.startsWith('/') ? text.substring(1) : text;
+                let pRes = await pool.query('SELECT * FROM users WHERE internal_username = $1', [targetUsername]);
+                if (pRes.rows.length > 0) {
+                    let target = pRes.rows[0];
+                    let profileStr = `👤 **پروفایل مخاطب**\n\n📝 نام: ${target.username || 'نامشخص'}\n⚧ جنسیت: ${target.gender || 'نامشخص'}\n🎂 سن: ${target.age || 'نامشخص'}\n📍 استان: ${target.province || 'نامشخص'}\n🧠 تیپ شخصیتی: ${target.personality_type || 'ثبت نشده'}`;
+                    await sendMessage(platform, chatId, profileStr);
+                } else {
+                    await sendMessage(platform, chatId, "❌ پروفایل این کاربر پیدا نشد.");
+                }
+                return;
+            }
 
             if (user.step === 'ASK_USERNAME' && text) {
                 const persianRegex = /^[\u0600-\u06FF\s]+$/;
@@ -287,7 +312,6 @@ async function handleUpdate(platform, req, res) {
                 await sendMessage(platform, chatId, "⚠️ لطفاً ابتدا در کانال‌ها عضو شوید:", getJoinKeyboard(platform));
             }
 
-            // --- هندل کردن حالت‌های ویرایش پروفایل ---
             else if (user.step === 'EDIT_USERNAME' && text) {
                 const persianRegex = /^[\u0600-\u06FF\s]+$/;
                 if (!persianRegex.test(text)) {
@@ -319,29 +343,49 @@ async function handleUpdate(platform, req, res) {
                         let partner = partnerResult.rows[0];
                         await pool.query('UPDATE users SET step = $1, partner_id = $2 WHERE id = $3', ['CHATTING', partner.id, user.id]);
                         await pool.query('UPDATE users SET step = $1, partner_id = $2 WHERE id = $3', ['CHATTING', user.id, partner.id]);
-                        const chatKeyboard = { keyboard: [[{ text: "❌ لغو چت" }]], resize_keyboard: true };
-                        await sendMessage(platform, chatId, "🎉 یک نفر پیدا شد! می‌تونی چت رو شروع کنی.", chatKeyboard);
-                        await sendMessage(partner.platform, partner.chat_id, "🎉 یک نفر پیدا شد! می‌تونی چت رو شروع کنی.", chatKeyboard);
+                        
+                        const chatKeyboard = {
+                            keyboard: [
+                                [{ text: "مشاهده پروفایل مخاطب 👤" }, { text: "بازی دوز با مخاطب 🎮" }],
+                                [{ text: "پایان چت ❌" }]
+                            ],
+                            resize_keyboard: true
+                        };
+
+                        const userSafeMsg = `🎉 چت با ${partner.username} شروع شد - بهش /سلام کن\n\n⚠️ برای حفظ امنیت خود به هیچ کس اعتماد نکنید. مسئولیت هرگونه سوءاستفاده برعهده ی کاربر است.`;
+                        const partnerSafeMsg = `🎉 چت با ${user.username} شروع شد - بهش /سلام کن\n\n⚠️ برای حفظ امنیت خود به هیچ کس اعتماد نکنید. مسئولیت هرگونه سوءاستفاده برعهده ی کاربر است.`;
+
+                        await sendMessage(platform, chatId, userSafeMsg, chatKeyboard);
+                        await sendMessage(partner.platform, partner.chat_id, partnerSafeMsg, chatKeyboard);
                     } else {
                         await pool.query('UPDATE users SET step = $1 WHERE id = $2', ['SEARCHING', user.id]);
                         await sendMessage(platform, chatId, "⏳ در حال جستجوی یک فرد ناشناس...", { keyboard: [[{ text: "❌ انصراف از جستجو" }]], resize_keyboard: true });
                     }
                 }
-                // --- بخش پروفایل و جستجوی ویژه ---
                 else if (text === "پروفایل ⚙️") {
                     await showProfile(user, platform, chatId);
+                }
+                else if (text === "تست شخصیتی 🧠") {
+                    const kb = {
+                        inline_keyboard: [
+                            [{ text: "INTJ 🧠", callback_data: "mbti_INTJ" }, { text: "ENFP 🌟", callback_data: "mbti_ENFP" }],
+                            [{ text: "ISTP 🛠", callback_data: "mbti_ISTP" }, { text: "ESFJ 🤝", callback_data: "mbti_ESFJ" }]
+                        ]
+                    };
+                    await sendMessage(platform, chatId, "📝 به آزمون تیپ شخصیتی خوش آمدید!\n\n(در این نسخه می‌توانید مستقیماً تیپ خود را برای نمایش در پروفایل انتخاب کنید):", kb);
                 }
                 else if (text === "جستجوی ویژه 🔍") {
                     const kb = {
                         inline_keyboard: [
                             [{ text: 'هم استانی ها 📍', callback_data: 'advsearch_province' }],
-                            [{ text: 'همسن 🎂', callback_data: 'advsearch_age' }]
+                            [{ text: 'همسن 🎂', callback_data: 'advsearch_age' }],
+                            [{ text: 'تیپ شخصیتی 🧠', callback_data: 'advsearch_personality' }]
                         ]
                     };
                     await sendMessage(platform, chatId, "🔍 به چه کسی میخوای وصل بشی؟", kb);
                 }
                 else {
-                    await sendMessage(platform, chatId, "این بخش به زودی فعال می‌شود...");
+                    await sendMessage(platform, chatId, "این بخش در حال توسعه است...");
                 }
             }
             else if (user.step === 'SEARCHING' && text) {
@@ -354,20 +398,32 @@ async function handleUpdate(platform, req, res) {
                 }
             }
             else if (user.step === 'CHATTING' && text) {
-                if (text === "❌ لغو چت" || text === '/start') {
-                    await pool.query('UPDATE users SET step = $1, partner_id = NULL WHERE id = $2', ['REGISTERED', user.id]);
-                    await sendMessage(platform, chatId, "🔴 شما چت را ترک کردید.");
-                    await sendMainMenu(platform, chatId);
+                // مدیریت دکمه‌های کیبورد در حال چت
+                if (text === "پایان چت ❌" || text === "پایان چت") {
+                    const kb = {
+                        inline_keyboard: [
+                            [{ text: "اره ببند", callback_data: "confirm_end_chat" }, { text: "نه اشتباه شد", callback_data: "cancel_end_chat" }]
+                        ]
+                    };
+                    await sendMessage(platform, chatId, "مطمئنی میخوای چت رو ببندی؟", kb);
+                }
+                else if (text === "مشاهده پروفایل مخاطب 👤" || text === "مشاهده پروفایل مخاطب") {
                     if (user.partner_id) {
                         let pRes = await pool.query('SELECT * FROM users WHERE id = $1', [user.partner_id]);
                         if (pRes.rows.length > 0) {
                             let partner = pRes.rows[0];
-                            await pool.query('UPDATE users SET step = $1, partner_id = NULL WHERE id = $2', ['REGISTERED', partner.id]);
-                            await sendMessage(partner.platform, partner.chat_id, "🔴 طرف مقابل چت را ترک کرد.");
-                            await sendMainMenu(partner.platform, partner.chat_id);
+                            let profileStr = `👤 **پروفایل مخاطب**\n\n📝 نام: ${partner.username}\n⚧ جنسیت: ${partner.gender}\n🎂 سن: ${partner.age}\n📍 مکان: ${partner.province}\n🧠 تیپ شخصیتی: ${partner.personality_type || 'ثبت نشده'}\n\nبرای مشاهده کامل پروفایل بزنید: /${partner.internal_username}`;
+                            await sendMessage(platform, chatId, profileStr);
+                            
+                            // ارسال نوتیفیکیشن به طرف مقابل
+                            await sendMessage(partner.platform, partner.chat_id, `👀 ${user.username} ( /${user.internal_username} ) پروفایل شما را مشاهده کرد.`);
                         }
                     }
-                } else if (user.partner_id) {
+                }
+                else if (text === "بازی دوز با مخاطب 🎮" || text === "بازی دوز با مخاطب") {
+                    await sendMessage(platform, chatId, "🎮 بازی دوز دو نفره به زودی فعال می‌شود...");
+                }
+                else if (user.partner_id) {
                     let pRes = await pool.query('SELECT * FROM users WHERE id = $1', [user.partner_id]);
                     if (pRes.rows.length > 0) {
                         await sendMessage(pRes.rows[0].platform, pRes.rows[0].chat_id, `💬 ناشناس:\n${text}`);
@@ -387,7 +443,6 @@ async function handleUpdate(platform, req, res) {
 
                 if (user.step === 'ASK_GENDER' || user.step === 'EDIT_GENDER') {
                     const gender = data === 'gender_boy' ? 'پسر' : 'دختر';
-                    
                     if (user.step === 'EDIT_GENDER') {
                         await pool.query('UPDATE users SET gender = $1, step = $2, gender_edit_count = gender_edit_count + 1 WHERE id = $3', [gender, 'REGISTERED', user.id]);
                         await sendMessage(platform, chatId, `✅ جنسیت شما به (${gender}) تغییر یافت.`);
@@ -410,8 +465,36 @@ async function handleUpdate(platform, req, res) {
                 else if (user.step === 'CHECK_JOIN' && data === 'check_join') {
                     await handleJoinCheck(platform, chatId, user.id);
                 }
+                
+                // مدیریت دکمه‌های تاییدیه خروج چت
+                else if (data === 'confirm_end_chat') {
+                    if (user.step === 'CHATTING') {
+                        await pool.query('UPDATE users SET step = $1, partner_id = NULL WHERE id = $2', ['REGISTERED', user.id]);
+                        await sendMessage(platform, chatId, "🔴 چت پایان یافت.", { remove_keyboard: true });
+                        await sendMainMenu(platform, chatId);
+                        
+                        if (user.partner_id) {
+                            let pRes = await pool.query('SELECT * FROM users WHERE id = $1', [user.partner_id]);
+                            if (pRes.rows.length > 0) {
+                                let partner = pRes.rows[0];
+                                await pool.query('UPDATE users SET step = $1, partner_id = NULL WHERE id = $2', ['REGISTERED', partner.id]);
+                                await sendMessage(partner.platform, partner.chat_id, "🔴 طرف مقابل چت را ترک کرد.", { remove_keyboard: true });
+                                await sendMainMenu(partner.platform, partner.chat_id);
+                            }
+                        }
+                    }
+                }
+                else if (data === 'cancel_end_chat') {
+                    await sendMessage(platform, chatId, "✅ انصراف از خروج. به چت خود ادامه دهید...");
+                }
 
-                // --- هندل کردن دکمه‌های پروفایل ---
+                // ثبت تیپ شخصیتی (آزمایشی)
+                else if (data.startsWith('mbti_')) {
+                    const type = data.replace('mbti_', '');
+                    await pool.query('UPDATE users SET personality_type = $1 WHERE id = $2', [type, user.id]);
+                    await sendMessage(platform, chatId, `✅ تیپ شخصیتی (${type}) در پروفایل شما ثبت شد.`);
+                }
+
                 else if (data === 'prof_edit_menu') {
                     const genderLimitStr = user.gender_edit_count >= 1 ? '❌ (قفل شد)' : '✏️';
                     const kb = {
@@ -440,11 +523,7 @@ async function handleUpdate(platform, req, res) {
                 else if (data === 'prof_balance') {
                     await sendMessage(platform, chatId, `💰 **موجودی شما:**\n\n🪙 سکه: ${user.coins}\n💎 توکن ایردراپ: ${user.tokens}`);
                 }
-                else if (['prof_followers', 'prof_following', 'prof_likers'].includes(data)) {
-                    await sendMessage(platform, chatId, "این لیست در حال آماده سازی است... (نیازمند کوئری دیتابیس)");
-                }
-
-                // --- هندل کردن Action های ویرایش ---
+                
                 else if (data === 'edit_name') {
                     await pool.query('UPDATE users SET step = $1 WHERE id = $2', ['EDIT_USERNAME', user.id]);
                     await sendMessage(platform, chatId, "لطفاً نام کاربری جدید خود را (فقط فارسی) وارد کنید:", { remove_keyboard: true });
@@ -462,13 +541,18 @@ async function handleUpdate(platform, req, res) {
                         await sendMessage(platform, chatId, "لطفاً جنسیت صحیح خود را انتخاب کنید (فقط همین یک بار امکان پذیر است):", kb);
                     }
                 }
-                else if (data === 'edit_location' || data === 'edit_photo') {
-                     await sendMessage(platform, chatId, "این بخش از ویرایش به زودی پیاده سازی می‌شود...");
-                }
 
-                // --- هندل کردن لایه‌های جستجوی ویژه ---
+                // مدیریت جستجوی ویژه
                 else if (data.startsWith('advsearch_')) {
                     const searchMode = data.split('_')[1];
+                    
+                    if (searchMode === 'personality') {
+                        if (!user.personality_type) {
+                            await sendMessage(platform, chatId, "❌ شما هنوز تست تیپ شخصیتی را تکمیل نکرده‌اید. لطفاً ابتدا از منوی اصلی اقدام کنید.");
+                            return;
+                        }
+                    }
+
                     const kb = {
                         inline_keyboard: [
                             [{ text: 'فقط دختر 👧', callback_data: `dosearch_${searchMode}_female` }, { text: 'فقط پسر 👦', callback_data: `dosearch_${searchMode}_male` }],
@@ -479,9 +563,9 @@ async function handleUpdate(platform, req, res) {
                 }
                 else if (data.startsWith('dosearch_')) {
                     const parts = data.split('_');
-                    const searchMode = parts[1]; // province یا age
-                    const targetGender = parts[2]; // female, male, all
-                    await sendMessage(platform, chatId, `🔍 در حال جستجوی کاربران (${searchMode}) با فیلتر جنسیت (${targetGender})...\n\n(کوئری‌های مربوطه در مرحله بعد نوشته می‌شود)`);
+                    const searchMode = parts[1];
+                    const targetGender = parts[2];
+                    await sendMessage(platform, chatId, `🔍 در حال جستجوی کاربران (${searchMode}) با فیلتر جنسیت (${targetGender})...\n\n(کوئری جستجوی دقیق در بخش‌های بعدی افزوده خواهد شد)`);
                 }
             }
         }
@@ -494,7 +578,7 @@ app.post('/webhook/telegram', (req, res) => handleUpdate('telegram', req, res));
 app.post('/webhook/bale', (req, res) => handleUpdate('bale', req, res));
 
 app.get('/', (req, res) => {
-    res.send('Bot Server is Running! (Advanced Profile & Search Added)');
+    res.send('Bot Server is Running! (Personality, In-Chat Keyboard & Internal Username Added)');
 });
 
 app.listen(PORT, () => {
