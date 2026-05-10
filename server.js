@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const { Pool } = require('pg');
+const locations = require('./locations'); // اضافه شدن فایل لوکیشن‌ها
 
 const app = express();
 app.use(express.json());
@@ -10,17 +11,15 @@ const PORT = process.env.PORT || 3000;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const BALE_TOKEN = process.env.BALE_TOKEN;
 
-// آدرس‌های API
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 const BALE_API = `https://tapi.bale.ai/bot${BALE_TOKEN}`;
 
-// اتصال به دیتابیس
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
 });
 
-// ساخت جدول کاربران (اگر وجود نداشته باشد)
+// آماده‌سازی و بروزرسانی دیتابیس
 async function initDB() {
     try {
         await pool.query(`
@@ -37,14 +36,18 @@ async function initDB() {
                 UNIQUE(chat_id, platform)
             );
         `);
-        console.log("Database Ready!");
+        // اضافه کردن ستون‌های جدید اگر وجود نداشته باشند (برای جلوگیری از خطا با catch کنترل شده‌اند)
+        await pool.query(`ALTER TABLE users ADD COLUMN age INTEGER;`).catch(() => {});
+        await pool.query(`ALTER TABLE users ADD COLUMN province VARCHAR(50);`).catch(() => {});
+        await pool.query(`ALTER TABLE users ADD COLUMN city VARCHAR(50);`).catch(() => {});
+        
+        console.log("Database Ready and Updated!");
     } catch (error) {
         console.error("DB Error:", error.message);
     }
 }
 initDB();
 
-// تابع کمکی برای ارسال پیام
 async function sendMessage(platform, chatId, text, replyMarkup = null) {
     const url = platform === 'telegram' ? TELEGRAM_API : BALE_API;
     const payload = { chat_id: chatId, text: text };
@@ -56,30 +59,36 @@ async function sendMessage(platform, chatId, text, replyMarkup = null) {
     }
 }
 
-// هسته مرکزی پردازش پیام‌ها
+// تابع کمکی برای ساخت دکمه‌های شیشه‌ای دو ستونه
+function createInlineKeyboard(items, prefix) {
+    let keyboard = [];
+    let row = [];
+    for (let i = 0; i < items.length; i++) {
+        row.push({ text: items[i], callback_data: prefix + items[i] });
+        if (row.length === 2 || i === items.length - 1) {
+            keyboard.push(row);
+            row = [];
+        }
+    }
+    return { inline_keyboard: keyboard };
+}
+
 async function handleUpdate(platform, req, res) {
-    res.sendStatus(200); // پاسخ سریع به تلگرام/بله تا پیام را دوباره نفرستند
+    res.sendStatus(200); 
     
     try {
         const body = req.body;
 
-        // اگر کاربر متن فرستاد
+        // پردازش پیام‌های متنی
         if (body.message && body.message.text) {
             const msg = body.message;
             const chatId = msg.chat.id.toString();
             const text = msg.text;
 
-            // جستجوی کاربر در دیتابیس
             let userResult = await pool.query('SELECT * FROM users WHERE chat_id = $1 AND platform = $2', [chatId, platform]);
             
-            // اگر کاربر جدید است
             if (userResult.rows.length === 0) {
-                // ثبت کاربر در دیتابیس و اعطای پاداش اولیه
-                await pool.query(
-                    'INSERT INTO users (chat_id, platform, step) VALUES ($1, $2, $3)', 
-                    [chatId, platform, 'ASK_GENDER']
-                );
-                
+                await pool.query('INSERT INTO users (chat_id, platform, step) VALUES ($1, $2, $3)', [chatId, platform, 'ASK_GENDER']);
                 const keyboard = {
                     inline_keyboard: [
                         [{ text: "پسر هستم 👦", callback_data: "gender_boy" }, { text: "دختر هستم 👧", callback_data: "gender_girl" }]
@@ -91,29 +100,45 @@ async function handleUpdate(platform, req, res) {
 
             const user = userResult.rows[0];
 
-            // اگر در مرحله وارد کردن نام کاربری است
             if (user.step === 'ASK_USERNAME') {
-                // بررسی اینکه فقط حروف فارسی و فاصله باشد
                 const persianRegex = /^[\u0600-\u06FF\s]+$/;
                 if (!persianRegex.test(text)) {
-                    await sendMessage(platform, chatId, "❌ لطفاً نام کاربری را فقط با حروف فارسی (بدون عدد و حروف انگلیسی) وارد کن:");
+                    await sendMessage(platform, chatId, "❌ لطفاً نام کاربری را فقط با حروف فارسی (بدون عدد و انگلیسی) وارد کن:");
                     return;
                 }
-
-                // ذخیره نام کاربری و رفتن به مرحله بعد
                 await pool.query('UPDATE users SET username = $1, step = $2 WHERE id = $3', [text, 'ASK_AGE', user.id]);
                 await sendMessage(platform, chatId, `✅ نام کاربری "${text}" ثبت شد.\n\nحالا لطفاً سن خودت رو به عدد (مثلاً 22) وارد کن:`);
             }
+            else if (user.step === 'ASK_AGE') {
+                const age = parseInt(text);
+                // اعتبارسنجی سن (باید عدد باشد و بین 10 تا 99)
+                if (isNaN(age) || age < 10 || age > 99) {
+                    await sendMessage(platform, chatId, "❌ لطفاً یک سن معتبر به عدد (مثلاً 22) وارد کن:");
+                    return;
+                }
+                
+                await pool.query('UPDATE users SET age = $1, step = $2 WHERE id = $3', [age, 'ASK_PROVINCE', user.id]);
+                
+                // استخراج لیست استان‌ها از فایل locations و ساخت کیبورد
+                const provinces = Object.keys(locations);
+                const provinceKeyboard = createInlineKeyboard(provinces, 'prv_');
+                
+                await sendMessage(platform, chatId, `✅ سن شما (${age}) ثبت شد.\n\nلطفاً استان محل سکونت خودت رو از لیست زیر انتخاب کن:`, provinceKeyboard);
+            }
             else if (text === '/start') {
-                await sendMessage(platform, chatId, "شما قبلاً ثبت‌نام را شروع کرده‌اید. لطفاً مراحل را ادامه دهید.");
+                if (user.step === 'REGISTERED') {
+                    await sendMessage(platform, chatId, "شما قبلاً ثبت‌نام کرده‌اید. به منوی اصلی خوش آمدید.");
+                } else {
+                    await sendMessage(platform, chatId, "شما در حال ثبت‌نام هستید. لطفاً مرحله فعلی را تکمیل کنید.");
+                }
             }
         }
         
-        // اگر کاربر روی دکمه‌های شیشه‌ای کلیک کرد
+        // پردازش کلیک روی دکمه‌های شیشه‌ای
         else if (body.callback_query) {
             const query = body.callback_query;
             const chatId = query.message.chat.id.toString();
-            const data = query.data; // اطلاعات دکمه فشرده شده
+            const data = query.data;
 
             let userResult = await pool.query('SELECT * FROM users WHERE chat_id = $1 AND platform = $2', [chatId, platform]);
             if (userResult.rows.length > 0) {
@@ -121,9 +146,24 @@ async function handleUpdate(platform, req, res) {
 
                 if (user.step === 'ASK_GENDER') {
                     const gender = data === 'gender_boy' ? 'پسر' : 'دختر';
-                    // بروزرسانی جنسیت و رفتن به مرحله پرسش نام
                     await pool.query('UPDATE users SET gender = $1, step = $2 WHERE id = $3', [gender, 'ASK_USERNAME', user.id]);
-                    await sendMessage(platform, chatId, `✅ جنسیت شما (${gender}) ثبت شد.\n\nحالا یک نام کاربری فارسی برای خودت انتخاب کن (این نام به بقیه نمایش داده میشه):`);
+                    await sendMessage(platform, chatId, `✅ جنسیت شما (${gender}) ثبت شد.\n\nحالا یک نام کاربری فارسی برای خودت انتخاب کن:`);
+                }
+                else if (user.step === 'ASK_PROVINCE' && data.startsWith('prv_')) {
+                    const province = data.replace('prv_', ''); // حذف پیشوند
+                    await pool.query('UPDATE users SET province = $1, step = $2 WHERE id = $3', [province, 'ASK_CITY', user.id]);
+                    
+                    // استخراج لیست شهرهای آن استان و ساخت کیبورد
+                    const cities = locations[province] || [];
+                    const cityKeyboard = createInlineKeyboard(cities, 'cty_');
+                    
+                    await sendMessage(platform, chatId, `✅ استان ${province} ثبت شد.\n\nحالا شهر خودت رو انتخاب کن:`, cityKeyboard);
+                }
+                else if (user.step === 'ASK_CITY' && data.startsWith('cty_')) {
+                    const city = data.replace('cty_', '');
+                    await pool.query('UPDATE users SET city = $1, step = $2 WHERE id = $3', [city, 'REGISTERED', user.id]);
+                    
+                    await sendMessage(platform, chatId, `🎉 عالی! شهر ${city} هم ثبت شد.\n\n✅ ثبت‌نام شما با موفقیت به پایان رسید و اطلاعات شما در دیتابیس ذخیره شد.\n\nبه زودی منوی اصلی برای شما فعال می‌شود.`);
                 }
             }
         }
@@ -132,12 +172,11 @@ async function handleUpdate(platform, req, res) {
     }
 }
 
-// مسیرهای دریافت اطلاعات (Webhooks)
 app.post('/webhook/telegram', (req, res) => handleUpdate('telegram', req, res));
 app.post('/webhook/bale', (req, res) => handleUpdate('bale', req, res));
 
 app.get('/', (req, res) => {
-    res.send('Bot Server with Database is Running!');
+    res.send('Bot Server with Locations is Running!');
 });
 
 app.listen(PORT, () => {
