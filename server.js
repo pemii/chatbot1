@@ -14,9 +14,9 @@ const BALE_TOKEN = process.env.BALE_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 const BALE_API = `https://tapi.bale.ai/bot${BALE_TOKEN}`;
 
-// آیدی‌های عضویت
+// آیدی‌های کانال‌های عضویت
 const CHANNEL_USERNAME = '@CROWCHAT_1';
-const BACKUP_BOT_USERNAME = '@CROW2_CHATBOT';
+const SECOND_CHANNEL_USERNAME = '@ADS_LINK2';
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
@@ -42,19 +42,23 @@ async function initDB() {
                 UNIQUE(chat_id, platform)
             );
         `);
+
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS partner_id INTEGER;`);
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS job VARCHAR(100);`);
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS photo_id VARCHAR(255);`);
+
         console.log("Database Ready!");
     } catch (error) {
         console.error("DB Error:", error.message);
     }
 }
+
 initDB();
 
 // تابع تبدیل اعداد فارسی به انگلیسی
 function toEnglishDigits(str) {
     const persianNumbers = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+
     return str.split('').map(c => {
         let index = persianNumbers.indexOf(c);
         return index !== -1 ? index : c;
@@ -63,8 +67,15 @@ function toEnglishDigits(str) {
 
 async function sendMessage(platform, chatId, text, replyMarkup = null) {
     const url = platform === 'telegram' ? TELEGRAM_API : BALE_API;
-    const payload = { chat_id: chatId, text: text };
-    if (replyMarkup) payload.reply_markup = replyMarkup;
+
+    const payload = {
+        chat_id: chatId,
+        text: text
+    };
+
+    if (replyMarkup) {
+        payload.reply_markup = replyMarkup;
+    }
 
     try {
         await axios.post(`${url}/sendMessage`, payload);
@@ -73,22 +84,30 @@ async function sendMessage(platform, chatId, text, replyMarkup = null) {
     }
 }
 
-// آپدیت شده: پشتیبانی از تعداد ستون‌های دلخواه (پیش‌فرض 3 برای استان‌ها)
 function createInlineKeyboard(items, prefix, columns = 3) {
     let keyboard = [];
     let row = [];
+
     for (let i = 0; i < items.length; i++) {
-        row.push({ text: items[i], callback_data: prefix + items[i] });
+        row.push({
+            text: items[i],
+            callback_data: prefix + items[i]
+        });
+
         if (row.length === columns || i === items.length - 1) {
             keyboard.push(row);
             row = [];
         }
     }
-    return { inline_keyboard: keyboard };
+
+    return {
+        inline_keyboard: keyboard
+    };
 }
 
 async function sendMainMenu(platform, chatId) {
     const connectBtnText = platform === 'telegram' ? 'اتصال به بله 🟢' : 'اتصال به تلگرام 🔵';
+
     const menu = {
         keyboard: [
             [{ text: "چت با ناشناس 👤" }],
@@ -101,71 +120,98 @@ async function sendMainMenu(platform, chatId) {
         resize_keyboard: true,
         one_time_keyboard: false
     };
+
     await sendMessage(platform, chatId, "🏠 منوی اصلی ربات:\nلطفاً یک گزینه را انتخاب کنید.", menu);
 }
 
 const skipKeyboard = {
-    keyboard: [[{ text: "رد کردن ⏭" }]],
+    keyboard: [
+        [{ text: "رد کردن ⏭" }]
+    ],
     resize_keyboard: true,
     one_time_keyboard: true
 };
 
-function getJoinKeyboard(platform) {
-    const channelUrl = platform === 'telegram'
-        ? 'https://t.me/CROWCHAT_1'
-        : 'https://ble.ir/CROWCHAT_1';
+function usernameToUrl(platform, username) {
+    const cleanUsername = username.replace('@', '');
 
-    const backupBotUrl = platform === 'telegram'
-        ? 'https://t.me/CROW2_CHATBOT'
-        : 'https://ble.ir/CROW2_CHATBOT';
+    if (platform === 'telegram') {
+        return `https://t.me/${cleanUsername}`;
+    }
+
+    return `https://ble.ir/${cleanUsername}`;
+}
+
+function getJoinKeyboard(platform) {
+    const firstChannelUrl = usernameToUrl(platform, CHANNEL_USERNAME);
+    const secondChannelUrl = usernameToUrl(platform, SECOND_CHANNEL_USERNAME);
 
     return {
         inline_keyboard: [
-            [{ text: "📢 کانال اطلاع‌رسانی", url: channelUrl }],
-            [{ text: "🤖 ربات زاپاس", url: backupBotUrl }],
+            [{ text: "📢 کانال اطلاع‌رسانی", url: firstChannelUrl }],
+            [{ text: "📢 کانال دوم", url: secondChannelUrl }],
             [{ text: "✅ بررسی عضویت", callback_data: "check_join" }]
         ]
     };
 }
 
-// بررسی عضویت واقعی کانال در تلگرام
-async function checkTelegramChannelMembership(chatId) {
+// بررسی عضویت واقعی کاربر در یک کانال تلگرام
+async function checkTelegramChannelMembership(chatId, channelUsername) {
     try {
         const response = await axios.post(`${TELEGRAM_API}/getChatMember`, {
-            chat_id: CHANNEL_USERNAME,
+            chat_id: channelUsername,
             user_id: chatId
         });
 
         const status = response.data?.result?.status;
 
-        // member, administrator, creator => عضو محسوب می‌شوند
+        // این وضعیت‌ها یعنی کاربر عضو کانال است
         return ['member', 'administrator', 'creator'].includes(status);
     } catch (error) {
-        console.error('Telegram getChatMember Error:', error.response?.data || error.message);
+        console.error(
+            `Telegram getChatMember Error for ${channelUsername}:`,
+            error.response?.data || error.message
+        );
+
         return false;
     }
 }
 
 async function handleJoinCheck(platform, chatId, userId) {
     if (platform === 'telegram') {
-        const isChannelMember = await checkTelegramChannelMembership(chatId);
+        const isFirstChannelMember = await checkTelegramChannelMembership(chatId, CHANNEL_USERNAME);
+        const isSecondChannelMember = await checkTelegramChannelMembership(chatId, SECOND_CHANNEL_USERNAME);
 
-        if (!isChannelMember) {
+        if (!isFirstChannelMember || !isSecondChannelMember) {
+            let notJoinedText = "❌ عضویت شما کامل تایید نشد.\n\n";
+
+            if (!isFirstChannelMember) {
+                notJoinedText += "🔸 شما هنوز عضو کانال اطلاع‌رسانی نیستید.\n";
+            }
+
+            if (!isSecondChannelMember) {
+                notJoinedText += "🔸 شما هنوز عضو کانال دوم نیستید.\n";
+            }
+
+            notJoinedText += "\nلطفاً در هر دو کانال عضو شوید و دوباره روی «بررسی عضویت» بزنید.";
+
             await sendMessage(
                 platform,
                 chatId,
-                "❌ عضویت شما در کانال اطلاع‌رسانی تایید نشد.\nابتدا در کانال عضو شوید و سپس دوباره روی «بررسی عضویت» بزنید.",
+                notJoinedText,
                 getJoinKeyboard(platform)
             );
+
             return;
         }
 
-        // توجه: بررسی عضویت در ربات زاپاس از طریق Bot API تلگرام ممکن نیست
-        await pool.query('UPDATE users SET step = $1 WHERE id = $2', ['REGISTERED', userId]);
+        await pool.query(
+            'UPDATE users SET step = $1 WHERE id = $2',
+            ['REGISTERED', userId]
+        );
 
         const successText =
-            `✅ عضویت شما در کانال تایید شد.\n` +
-            `ℹ️ توجه: ورود به ربات زاپاس به‌صورت دستی انجام می‌شود.\n\n` +
+            `✅ عضویت شما در هر دو کانال تایید شد.\n\n` +
             `🎉 شما 1000 توکن، 20 سکه و 20 امتیاز دریافت کردید!\n\n` +
             `🔸 با رسیدن توکن به حداقل برداشت، میتوانید درخواست برداشت بدهید.\n` +
             `🔸 با استفاده از سکه‌ها، میتوانید با کاربران دیگر صحبت کنید.\n` +
@@ -174,11 +220,16 @@ async function handleJoinCheck(platform, chatId, userId) {
         await sendMessage(platform, chatId, "✅ عضویت شما تایید شد.", { remove_keyboard: true });
         await sendMessage(platform, chatId, successText);
         await sendMainMenu(platform, chatId);
+
         return;
     }
 
-    // برای بله فعلاً بررسی آزمایشی
-    await pool.query('UPDATE users SET step = $1 WHERE id = $2', ['REGISTERED', userId]);
+    // برای بله فعلاً بررسی واقعی عضویت مثل تلگرام در دسترس نیست
+    // پس فعلاً تایید آزمایشی انجام می‌شود
+    await pool.query(
+        'UPDATE users SET step = $1 WHERE id = $2',
+        ['REGISTERED', userId]
+    );
 
     const successText =
         `✅ عضویت شما تایید شد.\n\n` +
@@ -199,30 +250,57 @@ async function handleUpdate(platform, req, res) {
         const body = req.body;
         const msg = body.message;
 
-        // بررسی پیام متنی یا تصویری
+        // پردازش پیام‌های معمولی
         if (msg) {
             const chatId = msg.chat.id.toString();
             const text = msg.text;
-            const photo = msg.photo; // آرایه عکس‌ها در صورت ارسال تصویر
+            const photo = msg.photo;
 
-            // قابلیت ریست کردن ربات (حذف کامل از دیتابیس)
-            if (text && (text.toUpperCase() === '/RESET')) {
-                await pool.query('DELETE FROM users WHERE chat_id = $1 AND platform = $2', [chatId, platform]);
-                await sendMessage(platform, chatId, "♻️ اطلاعات شما با موفقیت از سیستم حذف شد. برای شروع مجدد /start را بفرستید.", { remove_keyboard: true });
+            // ریست کامل کاربر
+            if (text && text.toUpperCase() === '/RESET') {
+                await pool.query(
+                    'DELETE FROM users WHERE chat_id = $1 AND platform = $2',
+                    [chatId, platform]
+                );
+
+                await sendMessage(
+                    platform,
+                    chatId,
+                    "♻️ اطلاعات شما با موفقیت از سیستم حذف شد. برای شروع مجدد /start را بفرستید.",
+                    { remove_keyboard: true }
+                );
+
                 return;
             }
 
-            let userResult = await pool.query('SELECT * FROM users WHERE chat_id = $1 AND platform = $2', [chatId, platform]);
+            let userResult = await pool.query(
+                'SELECT * FROM users WHERE chat_id = $1 AND platform = $2',
+                [chatId, platform]
+            );
 
             // اگر کاربر جدید است
             if (userResult.rows.length === 0) {
-                await pool.query('INSERT INTO users (chat_id, platform, step) VALUES ($1, $2, $3)', [chatId, platform, 'ASK_GENDER']);
+                await pool.query(
+                    'INSERT INTO users (chat_id, platform, step) VALUES ($1, $2, $3)',
+                    [chatId, platform, 'ASK_GENDER']
+                );
+
                 const keyboard = {
                     inline_keyboard: [
-                        [{ text: "پسر هستم 👦", callback_data: "gender_boy" }, { text: "دختر هستم 👧", callback_data: "gender_girl" }]
+                        [
+                            { text: "پسر هستم 👦", callback_data: "gender_boy" },
+                            { text: "دختر هستم 👧", callback_data: "gender_girl" }
+                        ]
                     ]
                 };
-                await sendMessage(platform, chatId, "سلام! به ربات چت ناشناس خوش اومدی.\nلطفاً جنسیت خودت رو انتخاب کن:", keyboard);
+
+                await sendMessage(
+                    platform,
+                    chatId,
+                    "سلام! به ربات چت ناشناس خوش اومدی.\nلطفاً جنسیت خودت رو انتخاب کن:",
+                    keyboard
+                );
+
                 return;
             }
 
@@ -230,136 +308,314 @@ async function handleUpdate(platform, req, res) {
 
             if (user.step === 'ASK_USERNAME' && text) {
                 const persianRegex = /^[\u0600-\u06FF\s]+$/;
+
                 if (!persianRegex.test(text)) {
-                    await sendMessage(platform, chatId, "❌ فقط حروف فارسی مجاز است. لطفاً دوباره نام کاربری خود را بنویسید:");
+                    await sendMessage(
+                        platform,
+                        chatId,
+                        "❌ فقط حروف فارسی مجاز است. لطفاً دوباره نام کاربری خود را بنویسید:"
+                    );
                     return;
                 }
-                await pool.query('UPDATE users SET username = $1, step = $2 WHERE id = $3', [text, 'ASK_AGE', user.id]);
-                await sendMessage(platform, chatId, `✅ نام کاربری "${text}" ثبت شد.\nحالا سن خودت رو وارد کن (حداقل 15 - حداکثر 80):`);
-            }
-            else if (user.step === 'ASK_AGE' && text) {
-                const englishAgeText = toEnglishDigits(text);
-                const age = parseInt(englishAgeText);
-                if (isNaN(age) || age < 15 || age > 80) {
-                    await sendMessage(platform, chatId, "❌ لطفاً یک سن معتبر بین ۱۵ تا ۸۰ وارد کن:");
-                    return;
-                }
-                await pool.query('UPDATE users SET age = $1, step = $2 WHERE id = $3', [age, 'ASK_PROVINCE', user.id]);
-                const provinces = Object.keys(locations);
-                await sendMessage(platform, chatId, `✅ سن شما (${age}) ثبت شد.\nلطفاً استان خودت رو انتخاب کن:`, createInlineKeyboard(provinces, 'prv_', 3));
-            }
-            else if (user.step === 'ASK_JOB' && text) {
-                let jobStr = text === "رد کردن ⏭" ? "ثبت نشده" : text;
-                await pool.query('UPDATE users SET job = $1, step = $2 WHERE id = $3', [jobStr, 'ASK_PHOTO', user.id]);
-                await sendMessage(platform, chatId, "📸 در صورت تمایل یک عکس برای پروفایل خود ارسال کن:", skipKeyboard);
-            }
-            else if (user.step === 'ASK_PHOTO') {
-                let photoId = "بدون عکس";
-                if (photo && photo.length > 0) {
-                    // گرفتن بزرگترین سایز عکس
-                    photoId = photo[photo.length - 1].file_id;
-                }
 
-                await pool.query('UPDATE users SET photo_id = $1, step = $2 WHERE id = $3', [photoId, 'CHECK_JOIN', user.id]);
+                await pool.query(
+                    'UPDATE users SET username = $1, step = $2 WHERE id = $3',
+                    [text, 'ASK_AGE', user.id]
+                );
 
-                // پیام عضویت در کانال
-                const joinKeyboard = getJoinKeyboard(platform);
                 await sendMessage(
                     platform,
                     chatId,
-                    "⚠️ برای استفاده از ربات، لطفاً در کانال اطلاع‌رسانی و ربات زاپاس عضو شوید و سپس دکمه بررسی را بزنید:",
+                    `✅ نام کاربری "${text}" ثبت شد.\nحالا سن خودت رو وارد کن (حداقل 15 - حداکثر 80):`
+                );
+            }
+
+            else if (user.step === 'ASK_AGE' && text) {
+                const englishAgeText = toEnglishDigits(text);
+                const age = parseInt(englishAgeText);
+
+                if (isNaN(age) || age < 15 || age > 80) {
+                    await sendMessage(
+                        platform,
+                        chatId,
+                        "❌ لطفاً یک سن معتبر بین ۱۵ تا ۸۰ وارد کن:"
+                    );
+                    return;
+                }
+
+                await pool.query(
+                    'UPDATE users SET age = $1, step = $2 WHERE id = $3',
+                    [age, 'ASK_PROVINCE', user.id]
+                );
+
+                const provinces = Object.keys(locations);
+
+                await sendMessage(
+                    platform,
+                    chatId,
+                    `✅ سن شما (${age}) ثبت شد.\nلطفاً استان خودت رو انتخاب کن:`,
+                    createInlineKeyboard(provinces, 'prv_', 3)
+                );
+            }
+
+            else if (user.step === 'ASK_JOB' && text) {
+                let jobStr = text === "رد کردن ⏭" ? "ثبت نشده" : text;
+
+                await pool.query(
+                    'UPDATE users SET job = $1, step = $2 WHERE id = $3',
+                    [jobStr, 'ASK_PHOTO', user.id]
+                );
+
+                await sendMessage(
+                    platform,
+                    chatId,
+                    "📸 در صورت تمایل یک عکس برای پروفایل خود ارسال کن:",
+                    skipKeyboard
+                );
+            }
+
+            else if (user.step === 'ASK_PHOTO') {
+                let photoId = "بدون عکس";
+
+                if (photo && photo.length > 0) {
+                    photoId = photo[photo.length - 1].file_id;
+                }
+
+                await pool.query(
+                    'UPDATE users SET photo_id = $1, step = $2 WHERE id = $3',
+                    [photoId, 'CHECK_JOIN', user.id]
+                );
+
+                const joinKeyboard = getJoinKeyboard(platform);
+
+                await sendMessage(
+                    platform,
+                    chatId,
+                    "⚠️ برای استفاده از ربات، لطفاً در هر دو کانال عضو شوید و سپس دکمه بررسی عضویت را بزنید:",
                     joinKeyboard
                 );
             }
 
-            // وضعیت ثبت‌نام کامل شده (منوی اصلی)
+            else if (user.step === 'CHECK_JOIN' && text) {
+                await sendMessage(
+                    platform,
+                    chatId,
+                    "⚠️ لطفاً ابتدا در هر دو کانال عضو شوید و سپس روی دکمه «بررسی عضویت» بزنید:",
+                    getJoinKeyboard(platform)
+                );
+            }
+
+            // وضعیت ثبت‌نام کامل‌شده
             else if (user.step === 'REGISTERED' && text) {
                 if (text === '/start') {
                     await sendMainMenu(platform, chatId);
                 }
+
                 else if (text === "چت با ناشناس 👤") {
-                    // منطق فعلی مچ‌میکینگ که قبلاً نوشتیم
-                    let partnerResult = await pool.query('SELECT * FROM users WHERE step = $1 AND id != $2 LIMIT 1', ['SEARCHING', user.id]);
+                    let partnerResult = await pool.query(
+                        'SELECT * FROM users WHERE step = $1 AND id != $2 LIMIT 1',
+                        ['SEARCHING', user.id]
+                    );
+
                     if (partnerResult.rows.length > 0) {
                         let partner = partnerResult.rows[0];
-                        await pool.query('UPDATE users SET step = $1, partner_id = $2 WHERE id = $3', ['CHATTING', partner.id, user.id]);
-                        await pool.query('UPDATE users SET step = $1, partner_id = $2 WHERE id = $3', ['CHATTING', user.id, partner.id]);
-                        const chatKeyboard = { keyboard: [[{ text: "❌ لغو چت" }]], resize_keyboard: true };
-                        await sendMessage(platform, chatId, "🎉 یک نفر پیدا شد! می‌تونی چت رو شروع کنی.", chatKeyboard);
-                        await sendMessage(partner.platform, partner.chat_id, "🎉 یک نفر پیدا شد! می‌تونی چت رو شروع کنی.", chatKeyboard);
+
+                        await pool.query(
+                            'UPDATE users SET step = $1, partner_id = $2 WHERE id = $3',
+                            ['CHATTING', partner.id, user.id]
+                        );
+
+                        await pool.query(
+                            'UPDATE users SET step = $1, partner_id = $2 WHERE id = $3',
+                            ['CHATTING', user.id, partner.id]
+                        );
+
+                        const chatKeyboard = {
+                            keyboard: [
+                                [{ text: "❌ لغو چت" }]
+                            ],
+                            resize_keyboard: true
+                        };
+
+                        await sendMessage(
+                            platform,
+                            chatId,
+                            "🎉 یک نفر پیدا شد! می‌تونی چت رو شروع کنی.",
+                            chatKeyboard
+                        );
+
+                        await sendMessage(
+                            partner.platform,
+                            partner.chat_id,
+                            "🎉 یک نفر پیدا شد! می‌تونی چت رو شروع کنی.",
+                            chatKeyboard
+                        );
                     } else {
-                        await pool.query('UPDATE users SET step = $1 WHERE id = $2', ['SEARCHING', user.id]);
-                        const cancelKeyboard = { keyboard: [[{ text: "❌ انصراف از جستجو" }]], resize_keyboard: true };
-                        await sendMessage(platform, chatId, "⏳ در حال جستجوی یک فرد ناشناس...", cancelKeyboard);
+                        await pool.query(
+                            'UPDATE users SET step = $1 WHERE id = $2',
+                            ['SEARCHING', user.id]
+                        );
+
+                        const cancelKeyboard = {
+                            keyboard: [
+                                [{ text: "❌ انصراف از جستجو" }]
+                            ],
+                            resize_keyboard: true
+                        };
+
+                        await sendMessage(
+                            platform,
+                            chatId,
+                            "⏳ در حال جستجوی یک فرد ناشناس...",
+                            cancelKeyboard
+                        );
                     }
                 }
+
                 else {
-                    // فعلاً بقیه دکمه‌ها منطق ندارند
-                    await sendMessage(platform, chatId, "این بخش به زودی در فازهای بعدی فعال می‌شود...");
+                    await sendMessage(
+                        platform,
+                        chatId,
+                        "این بخش به زودی در فازهای بعدی فعال می‌شود..."
+                    );
                 }
             }
+
             else if (user.step === 'SEARCHING' && text) {
                 if (text === "❌ انصراف از جستجو" || text === '/start') {
-                    await pool.query('UPDATE users SET step = $1 WHERE id = $2', ['REGISTERED', user.id]);
+                    await pool.query(
+                        'UPDATE users SET step = $1 WHERE id = $2',
+                        ['REGISTERED', user.id]
+                    );
+
                     await sendMessage(platform, chatId, "🛑 جستجو لغو شد.");
                     await sendMainMenu(platform, chatId);
                 } else {
-                    await sendMessage(platform, chatId, "⏳ هنوز در حال جستجو هستیم... برای لغو، دکمه پایین را بزن.");
+                    await sendMessage(
+                        platform,
+                        chatId,
+                        "⏳ هنوز در حال جستجو هستیم... برای لغو، دکمه پایین را بزن."
+                    );
                 }
             }
+
             else if (user.step === 'CHATTING' && text) {
                 if (text === "❌ لغو چت" || text === '/start') {
-                    await pool.query('UPDATE users SET step = $1, partner_id = NULL WHERE id = $2', ['REGISTERED', user.id]);
+                    await pool.query(
+                        'UPDATE users SET step = $1, partner_id = NULL WHERE id = $2',
+                        ['REGISTERED', user.id]
+                    );
+
                     await sendMessage(platform, chatId, "🔴 شما چت را ترک کردید.");
                     await sendMainMenu(platform, chatId);
 
                     if (user.partner_id) {
-                        let pRes = await pool.query('SELECT * FROM users WHERE id = $1', [user.partner_id]);
+                        let pRes = await pool.query(
+                            'SELECT * FROM users WHERE id = $1',
+                            [user.partner_id]
+                        );
+
                         if (pRes.rows.length > 0) {
                             let partner = pRes.rows[0];
-                            await pool.query('UPDATE users SET step = $1, partner_id = NULL WHERE id = $2', ['REGISTERED', partner.id]);
-                            await sendMessage(partner.platform, partner.chat_id, "🔴 طرف مقابل چت را ترک کرد.");
+
+                            await pool.query(
+                                'UPDATE users SET step = $1, partner_id = NULL WHERE id = $2',
+                                ['REGISTERED', partner.id]
+                            );
+
+                            await sendMessage(
+                                partner.platform,
+                                partner.chat_id,
+                                "🔴 طرف مقابل چت را ترک کرد."
+                            );
+
                             await sendMainMenu(partner.platform, partner.chat_id);
                         }
                     }
                 } else {
                     if (user.partner_id) {
-                        let pRes = await pool.query('SELECT * FROM users WHERE id = $1', [user.partner_id]);
+                        let pRes = await pool.query(
+                            'SELECT * FROM users WHERE id = $1',
+                            [user.partner_id]
+                        );
+
                         if (pRes.rows.length > 0) {
                             let partner = pRes.rows[0];
-                            await sendMessage(partner.platform, partner.chat_id, `💬 ناشناس:\n${text}`);
+
+                            await sendMessage(
+                                partner.platform,
+                                partner.chat_id,
+                                `💬 ناشناس:\n${text}`
+                            );
                         }
                     }
                 }
             }
         }
 
-        // پردازش دکمه‌های شیشه‌ای
+        // پردازش callback_query دکمه‌های شیشه‌ای
         else if (body.callback_query) {
             const query = body.callback_query;
             const chatId = query.message.chat.id.toString();
             const data = query.data;
 
-            let userResult = await pool.query('SELECT * FROM users WHERE chat_id = $1 AND platform = $2', [chatId, platform]);
+            let userResult = await pool.query(
+                'SELECT * FROM users WHERE chat_id = $1 AND platform = $2',
+                [chatId, platform]
+            );
+
             if (userResult.rows.length > 0) {
                 const user = userResult.rows[0];
 
                 if (user.step === 'ASK_GENDER') {
                     const gender = data === 'gender_boy' ? 'پسر' : 'دختر';
-                    await pool.query('UPDATE users SET gender = $1, step = $2 WHERE id = $3', [gender, 'ASK_USERNAME', user.id]);
-                    await sendMessage(platform, chatId, `✅ جنسیت (${gender}) ثبت شد.\nحالا یک نام کاربری فارسی انتخاب کن:`);
+
+                    await pool.query(
+                        'UPDATE users SET gender = $1, step = $2 WHERE id = $3',
+                        [gender, 'ASK_USERNAME', user.id]
+                    );
+
+                    await sendMessage(
+                        platform,
+                        chatId,
+                        `✅ جنسیت (${gender}) ثبت شد.\nحالا یک نام کاربری فارسی انتخاب کن:`
+                    );
                 }
+
                 else if (user.step === 'ASK_PROVINCE' && data.startsWith('prv_')) {
                     const province = data.replace('prv_', '');
-                    await pool.query('UPDATE users SET province = $1, step = $2 WHERE id = $3', [province, 'ASK_CITY', user.id]);
+
+                    await pool.query(
+                        'UPDATE users SET province = $1, step = $2 WHERE id = $3',
+                        [province, 'ASK_CITY', user.id]
+                    );
+
                     const cities = locations[province] || [];
-                    await sendMessage(platform, chatId, `✅ استان ${province} ثبت شد.\nشهر خودت رو انتخاب کن:`, createInlineKeyboard(cities, 'cty_', 3));
+
+                    await sendMessage(
+                        platform,
+                        chatId,
+                        `✅ استان ${province} ثبت شد.\nشهر خودت رو انتخاب کن:`,
+                        createInlineKeyboard(cities, 'cty_', 3)
+                    );
                 }
+
                 else if (user.step === 'ASK_CITY' && data.startsWith('cty_')) {
                     const city = data.replace('cty_', '');
-                    await pool.query('UPDATE users SET city = $1, step = $2 WHERE id = $3', [city, 'ASK_JOB', user.id]);
-                    await sendMessage(platform, chatId, `🎉 عالی! شهر ${city} هم ثبت شد.\n💼 حالا شغل خودت رو تایپ کن (یا از دکمه رد کردن استفاده کن):`, skipKeyboard);
+
+                    await pool.query(
+                        'UPDATE users SET city = $1, step = $2 WHERE id = $3',
+                        [city, 'ASK_JOB', user.id]
+                    );
+
+                    await sendMessage(
+                        platform,
+                        chatId,
+                        `🎉 عالی! شهر ${city} هم ثبت شد.\n💼 حالا شغل خودت رو تایپ کن (یا از دکمه رد کردن استفاده کن):`,
+                        skipKeyboard
+                    );
                 }
+
                 else if (user.step === 'CHECK_JOIN' && data === 'check_join') {
                     await handleJoinCheck(platform, chatId, user.id);
                 }
@@ -374,7 +630,7 @@ app.post('/webhook/telegram', (req, res) => handleUpdate('telegram', req, res));
 app.post('/webhook/bale', (req, res) => handleUpdate('bale', req, res));
 
 app.get('/', (req, res) => {
-    res.send('Bot Server is Running! (Advanced Registration + Real Join Check)');
+    res.send('Bot Server is Running! (Advanced Registration + Two Channels Real Join Check)');
 });
 
 app.listen(PORT, () => {
