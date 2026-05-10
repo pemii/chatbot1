@@ -14,6 +14,10 @@ const BALE_TOKEN = process.env.BALE_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 const BALE_API = `https://tapi.bale.ai/bot${BALE_TOKEN}`;
 
+// آیدی‌های عضویت
+const CHANNEL_USERNAME = '@CROWCHAT_1';
+const BACKUP_BOT_USERNAME = '@CROW2_CHATBOT';
+
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
@@ -61,10 +65,11 @@ async function sendMessage(platform, chatId, text, replyMarkup = null) {
     const url = platform === 'telegram' ? TELEGRAM_API : BALE_API;
     const payload = { chat_id: chatId, text: text };
     if (replyMarkup) payload.reply_markup = replyMarkup;
+
     try {
         await axios.post(`${url}/sendMessage`, payload);
     } catch (error) {
-        console.error(`Send Message Error (${platform}):`, error.message);
+        console.error(`Send Message Error (${platform}):`, error.response?.data || error.message);
     }
 }
 
@@ -105,9 +110,91 @@ const skipKeyboard = {
     one_time_keyboard: true
 };
 
+function getJoinKeyboard(platform) {
+    const channelUrl = platform === 'telegram'
+        ? 'https://t.me/CROWCHAT_1'
+        : 'https://ble.ir/CROWCHAT_1';
+
+    const backupBotUrl = platform === 'telegram'
+        ? 'https://t.me/CROW2_CHATBOT'
+        : 'https://ble.ir/CROW2_CHATBOT';
+
+    return {
+        inline_keyboard: [
+            [{ text: "📢 کانال اطلاع‌رسانی", url: channelUrl }],
+            [{ text: "🤖 ربات زاپاس", url: backupBotUrl }],
+            [{ text: "✅ بررسی عضویت", callback_data: "check_join" }]
+        ]
+    };
+}
+
+// بررسی عضویت واقعی کانال در تلگرام
+async function checkTelegramChannelMembership(chatId) {
+    try {
+        const response = await axios.post(`${TELEGRAM_API}/getChatMember`, {
+            chat_id: CHANNEL_USERNAME,
+            user_id: chatId
+        });
+
+        const status = response.data?.result?.status;
+
+        // member, administrator, creator => عضو محسوب می‌شوند
+        return ['member', 'administrator', 'creator'].includes(status);
+    } catch (error) {
+        console.error('Telegram getChatMember Error:', error.response?.data || error.message);
+        return false;
+    }
+}
+
+async function handleJoinCheck(platform, chatId, userId) {
+    if (platform === 'telegram') {
+        const isChannelMember = await checkTelegramChannelMembership(chatId);
+
+        if (!isChannelMember) {
+            await sendMessage(
+                platform,
+                chatId,
+                "❌ عضویت شما در کانال اطلاع‌رسانی تایید نشد.\nابتدا در کانال عضو شوید و سپس دوباره روی «بررسی عضویت» بزنید.",
+                getJoinKeyboard(platform)
+            );
+            return;
+        }
+
+        // توجه: بررسی عضویت در ربات زاپاس از طریق Bot API تلگرام ممکن نیست
+        await pool.query('UPDATE users SET step = $1 WHERE id = $2', ['REGISTERED', userId]);
+
+        const successText =
+            `✅ عضویت شما در کانال تایید شد.\n` +
+            `ℹ️ توجه: ورود به ربات زاپاس به‌صورت دستی انجام می‌شود.\n\n` +
+            `🎉 شما 1000 توکن، 20 سکه و 20 امتیاز دریافت کردید!\n\n` +
+            `🔸 با رسیدن توکن به حداقل برداشت، میتوانید درخواست برداشت بدهید.\n` +
+            `🔸 با استفاده از سکه‌ها، میتوانید با کاربران دیگر صحبت کنید.\n` +
+            `🔸 با جمع آوری امتیاز، جزو 100 نفر برتر در 100 روز شوید و جایزه بگیرید.`;
+
+        await sendMessage(platform, chatId, "✅ عضویت شما تایید شد.", { remove_keyboard: true });
+        await sendMessage(platform, chatId, successText);
+        await sendMainMenu(platform, chatId);
+        return;
+    }
+
+    // برای بله فعلاً بررسی آزمایشی
+    await pool.query('UPDATE users SET step = $1 WHERE id = $2', ['REGISTERED', userId]);
+
+    const successText =
+        `✅ عضویت شما تایید شد.\n\n` +
+        `🎉 شما 1000 توکن، 20 سکه و 20 امتیاز دریافت کردید!\n\n` +
+        `🔸 با رسیدن توکن به حداقل برداشت، میتوانید درخواست برداشت بدهید.\n` +
+        `🔸 با استفاده از سکه‌ها، میتوانید با کاربران دیگر صحبت کنید.\n` +
+        `🔸 با جمع آوری امتیاز، جزو 100 نفر برتر در 100 روز شوید و جایزه بگیرید.`;
+
+    await sendMessage(platform, chatId, "✅ عضویت شما تایید شد.", { remove_keyboard: true });
+    await sendMessage(platform, chatId, successText);
+    await sendMainMenu(platform, chatId);
+}
+
 async function handleUpdate(platform, req, res) {
-    res.sendStatus(200); 
-    
+    res.sendStatus(200);
+
     try {
         const body = req.body;
         const msg = body.message;
@@ -126,7 +213,7 @@ async function handleUpdate(platform, req, res) {
             }
 
             let userResult = await pool.query('SELECT * FROM users WHERE chat_id = $1 AND platform = $2', [chatId, platform]);
-            
+
             // اگر کاربر جدید است
             if (userResult.rows.length === 0) {
                 await pool.query('INSERT INTO users (chat_id, platform, step) VALUES ($1, $2, $3)', [chatId, platform, 'ASK_GENDER']);
@@ -170,35 +257,26 @@ async function handleUpdate(platform, req, res) {
                 let photoId = "بدون عکس";
                 if (photo && photo.length > 0) {
                     // گرفتن بزرگترین سایز عکس
-                    photoId = photo[photo.length - 1].file_id; 
+                    photoId = photo[photo.length - 1].file_id;
                 }
-                
+
                 await pool.query('UPDATE users SET photo_id = $1, step = $2 WHERE id = $3', [photoId, 'CHECK_JOIN', user.id]);
-                
+
                 // پیام عضویت در کانال
-                const channelUrl = platform === 'telegram'
-                    ? 'https://t.me/CROWCHAT_1'
-                    : 'https://ble.ir/CROWCHAT_1';
-
-                const backupBotUrl = platform === 'telegram'
-                    ? 'https://t.me/CROW2_CHATBOT'
-                    : 'https://ble.ir/CROW2_CHATBOT';
-
-                const joinKeyboard = {
-                    inline_keyboard: [
-                        [{ text: "📢 کانال اطلاع‌رسانی", url: channelUrl }],
-                        [{ text: "🤖 ربات زاپاس", url: backupBotUrl }],
-                        [{ text: "✅ بررسی عضویت", callback_data: "check_join" }]
-                    ]
-                };
-                await sendMessage(platform, chatId, "⚠️ برای استفاده از ربات، لطفاً در کانال اطلاع‌رسانی و ربات زاپاس ما عضو شوید و سپس دکمه بررسی را بزنید:", joinKeyboard);
+                const joinKeyboard = getJoinKeyboard(platform);
+                await sendMessage(
+                    platform,
+                    chatId,
+                    "⚠️ برای استفاده از ربات، لطفاً در کانال اطلاع‌رسانی و ربات زاپاس عضو شوید و سپس دکمه بررسی را بزنید:",
+                    joinKeyboard
+                );
             }
-            
+
             // وضعیت ثبت‌نام کامل شده (منوی اصلی)
             else if (user.step === 'REGISTERED' && text) {
                 if (text === '/start') {
                     await sendMainMenu(platform, chatId);
-                } 
+                }
                 else if (text === "چت با ناشناس 👤") {
                     // منطق فعلی مچ‌میکینگ که قبلاً نوشتیم
                     let partnerResult = await pool.query('SELECT * FROM users WHERE step = $1 AND id != $2 LIMIT 1', ['SEARCHING', user.id]);
@@ -255,7 +333,7 @@ async function handleUpdate(platform, req, res) {
                 }
             }
         }
-        
+
         // پردازش دکمه‌های شیشه‌ای
         else if (body.callback_query) {
             const query = body.callback_query;
@@ -283,30 +361,22 @@ async function handleUpdate(platform, req, res) {
                     await sendMessage(platform, chatId, `🎉 عالی! شهر ${city} هم ثبت شد.\n💼 حالا شغل خودت رو تایپ کن (یا از دکمه رد کردن استفاده کن):`, skipKeyboard);
                 }
                 else if (user.step === 'CHECK_JOIN' && data === 'check_join') {
-                    // فعلا به صورت آزمایشی عضویت تایید می‌شود. (در آینده به API تلگرام وصل می‌شود)
-                    await pool.query('UPDATE users SET step = $1 WHERE id = $2', ['REGISTERED', user.id]);
-                    
-                    const successText = `🎉 شما 1000 توکن، 20 سکه و 20 امتیاز دریافت کردید!\n\n` +
-                                        `🔸 با رسیدن توکن به حداقل برداشت، میتوانید درخواست برداشت بدهید.\n` +
-                                        `🔸 با استفاده از سکه‌ها، میتوانید با کاربران دیگر صحبت کنید.\n` +
-                                        `🔸 با جمع آوری امتیاز، جزو 100 نفر برتر در 100 روز شوید و جایزه بگیرید.`;
-                    
-                    // حذف کیبوردهای قبلی و نمایش پیام موفقیت
-                    await sendMessage(platform, chatId, "✅ عضویت شما تایید شد.", { remove_keyboard: true });
-                    await sendMessage(platform, chatId, successText);
-                    
-                    // نمایش منوی اصلی
-                    await sendMainMenu(platform, chatId);
+                    await handleJoinCheck(platform, chatId, user.id);
                 }
             }
         }
     } catch (error) {
-        console.error("Handler Error:", error.message);
+        console.error("Handler Error:", error.response?.data || error.message);
     }
 }
 
 app.post('/webhook/telegram', (req, res) => handleUpdate('telegram', req, res));
 app.post('/webhook/bale', (req, res) => handleUpdate('bale', req, res));
 
-app.get('/', (req, res) => { res.send('Bot Server is Running! (Advanced Registration)'); });
-app.listen(PORT, () => { console.log(`Server is running on port ${PORT}`); });
+app.get('/', (req, res) => {
+    res.send('Bot Server is Running! (Advanced Registration + Real Join Check)');
+});
+
+app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+});
