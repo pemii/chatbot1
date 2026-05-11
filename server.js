@@ -1,12 +1,15 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+const fs = require('fs');
+const FormData = require('form-data');
 const { Pool } = require('pg');
 const locations = require('./locations');
 
+
 // اضافه شدن فایل‌های مدیریت تست شخصیتی و PDF
-const mbtiTest = require('./mbti_test'); 
-const pdfGenerator = require('./pdf_generator'); 
+const mbtiTest = require('./mbti_test');
+const pdfGenerator = require('./pdf_generator');
 
 const app = express();
 app.use(express.json());
@@ -14,9 +17,9 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const BALE_TOKEN = process.env.BALE_TOKEN;
-const BOT_USERNAME = process.env.BOT_USERNAME || 'YOUR_BOT_USERNAME'; 
+const BOT_USERNAME = process.env.BOT_USERNAME || 'YOUR_BOT_USERNAME';
 // در صورت نیاز ایدی ادمین را برای دریافت فیش‌های واریزی در .env قرار دهید
-const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID; 
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 const BALE_API = `https://tapi.bale.ai/bot${BALE_TOKEN}`;
@@ -98,7 +101,6 @@ ISTJ + ESFP
 ISFP + ESFJ
 ISTP + ESTJ`;
 
-// متن اصلاح‌شده برای پرداخت سکه‌ای
 const MBTI_BUY_TEXT = `تا حالا برات سوال شده چرا بعضی تصمیم‌ها رو سریع می‌گیری، چرا از بعضی جمع‌ها انرژی می‌گیری یا چرا با بعضی آدم‌ها راحت‌تر ارتباط برقرار می‌کنی؟
 
 تست MBTI بهت کمک می‌کنه تیپ شخصیتی خودت رو بشناسی و بفهمی در ارتباطات، کار، تصمیم‌گیری و رشد فردی چه الگوهایی داری.
@@ -148,11 +150,10 @@ async function initDB() {
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS gender_edit_count INTEGER DEFAULT 0;`);
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS personality_type VARCHAR(20);`);
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS internal_username VARCHAR(20);`);
-        
-        // فیلدهای جدید برای ریفرال و تست MBTI
+
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS referrer_id INTEGER;`);
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS mbti_answers JSONB DEFAULT '[]'::jsonb;`);
-        
+
         await pool.query(`UPDATE users SET internal_username = 'USER_' || id || 'X' WHERE internal_username IS NULL;`);
 
         await pool.query(`
@@ -200,6 +201,37 @@ async function sendMessage(platform, chatId, text, replyMarkup = null) {
         console.error(`Send Message Error (${platform}):`, error.response?.data || error.message);
     }
 }
+// Helper function to send documents
+async function sendDocument(platform, chatId, filePath, caption = null, replyMarkup = null) {
+    const url = platform === 'telegram' ? TELEGRAM_API : BALE_API;
+
+    const form = new FormData();
+    form.append('chat_id', chatId);
+    form.append('document', fs.createReadStream(filePath));
+
+    if (caption) {
+        form.append('caption', caption);
+    }
+
+    if (replyMarkup) {
+        form.append('reply_markup', JSON.stringify(replyMarkup));
+    }
+
+    try {
+        console.log(`Sending document via ${platform}. ChatId: ${chatId}, File: ${filePath}`);
+
+        const response = await axios.post(`${url}/sendDocument`, form, {
+            headers: {
+                ...form.getHeaders()
+            }
+        });
+
+        return response.data.result;
+    } catch (error) {
+        console.error(`Send Document Error (${platform}):`, error.response?.data || error.message);
+        return null;
+    }
+}
 
 async function sendPhoto(platform, chatId, photoId, caption, replyMarkup = null) {
     const url = platform === 'telegram' ? TELEGRAM_API : BALE_API;
@@ -212,6 +244,341 @@ async function sendPhoto(platform, chatId, photoId, caption, replyMarkup = null)
         await sendMessage(platform, chatId, caption, replyMarkup);
     }
 }
+
+async function answerCallback(platform, callbackQueryId, text = null) {
+    const url = platform === 'telegram' ? TELEGRAM_API : BALE_API;
+
+    try {
+        const payload = {
+            callback_query_id: callbackQueryId
+        };
+
+        if (text) {
+            payload.text = text;
+            payload.show_alert = false;
+        }
+
+        await axios.post(`${url}/answerCallbackQuery`, payload);
+    } catch (error) {
+        console.error(`Answer Callback Error (${platform}):`, error.response?.data || error.message);
+    }
+}
+
+function getMbtiQuestions() {
+    return (
+        mbtiTest.questions ||
+        mbtiTest.QUESTIONS ||
+        mbtiTest.mbtiQuestions ||
+        mbtiTest.MBTI_QUESTIONS ||
+        []
+    );
+}
+
+function getQuestionId(question, index) {
+    return question.id || question.number || index + 1;
+}
+
+function getQuestionText(question, index) {
+    return question.text || question.question || question.title || `سؤال ${index + 1}`;
+}
+
+function getOptionA(question) {
+    return (
+        question.optionA ||
+        question.option_a ||
+        question.a ||
+        question.A ||
+        question.answers?.A ||
+        question.options?.A ||
+        "گزینه A"
+    );
+}
+
+
+function getOptionB(question) {
+    return (
+        question.optionB ||
+        question.option_b ||
+        question.b ||
+        question.B ||
+        question.answers?.B ||
+        question.options?.B ||
+        "گزینه B"
+    );
+}
+
+
+function parseMbtiState(raw) {
+    if (!raw) {
+        return {
+            stage: "main",
+            current: 1,
+            answers: {},
+            tieAnswers: {},
+            result: null
+        };
+    }
+
+    if (Array.isArray(raw)) {
+        return {
+            stage: "main",
+            current: 1,
+            answers: {},
+            tieAnswers: {},
+            result: null
+        };
+    }
+
+    if (typeof raw === "object") {
+        return {
+            stage: raw.stage || "main",
+            current: raw.current || 1,
+            answers: raw.answers || {},
+            tieAnswers: raw.tieAnswers || {},
+            result: raw.result || null
+        };
+    }
+
+    try {
+        const parsed = JSON.parse(raw);
+        return parseMbtiState(parsed);
+    } catch (e) {
+        return {
+            stage: "main",
+            current: 1,
+            answers: {},
+            tieAnswers: {},
+            result: null
+        };
+    }
+}
+
+async function saveMbtiState(userId, state) {
+    await pool.query(
+        "UPDATE users SET mbti_answers = $1 WHERE id = $2",
+        [JSON.stringify(state), userId]
+    );
+}
+
+async function startMbtiTest(platform, chatId, user) {
+    try {
+        const userId = user.id;
+
+        const state = {
+            stage: "testing",
+            currentIndex: 0,
+            answers: {},
+            tieAnswers: {},
+            messageId: null,
+            mbti_message_id: null,
+            result: null
+        };
+
+        await pool.query(
+            "UPDATE users SET step = $1, mbti_answers = $2 WHERE id = $3",
+            ["MBTI_TEST_IN_PROGRESS", JSON.stringify(state), userId]
+        );
+
+        await sendMbtiQuestion(platform, chatId, userId, state, null);
+
+    } catch (error) {
+        console.error("startMbtiTest Error:", error);
+        await sendMessage(platform, chatId, "❌ شروع تست با خطا مواجه شد.");
+    }
+}
+
+
+
+async function sendMbtiQuestion(platform, chatId, userId, state, messageId = null) {
+    try {
+        const questions = getMbtiQuestions();
+        const currentIndex = state.currentIndex || 0;
+
+        if (currentIndex >= questions.length) {
+            await finishMbtiTest(platform, chatId, userId, state, messageId);
+            return;
+        }
+
+        const question = questions[currentIndex];
+
+        const questionText =
+            `🧠 سوال ${currentIndex + 1} از ${questions.length}\n\n` +
+            `${question.text}`;
+
+        const keyboard = {
+            inline_keyboard: [
+                [
+                    { text: question.optionA, callback_data: `mbti_ans_A` }
+                ],
+                [
+                    { text: question.optionB, callback_data: `mbti_ans_B` }
+                ],
+                [
+                    { text: "❌ انصراف از تست", callback_data: "mbti_cancel_test" }
+                ]
+            ]
+        };
+
+        let sentMessageId = messageId || state.mbti_message_id || null;
+
+        if (sentMessageId) {
+            try {
+                await editMessageText(platform, chatId, sentMessageId, questionText, keyboard);
+            } catch (editError) {
+                console.error("editMessageText failed, sending new message instead:", editError);
+
+                const sentMsg = await sendMessage(platform, chatId, questionText, keyboard);
+                sentMessageId =
+                    sentMsg?.message_id ||
+                    sentMsg?.result?.message_id ||
+                    sentMessageId;
+            }
+        } else {
+            const sentMsg = await sendMessage(platform, chatId, questionText, keyboard);
+            sentMessageId =
+                sentMsg?.message_id ||
+                sentMsg?.result?.message_id ||
+                null;
+        }
+
+        state.mbti_message_id = sentMessageId;
+        state.messageId = sentMessageId;
+
+        await saveMbtiState(userId, state);
+
+    } catch (error) {
+        console.error("sendMbtiQuestion Error:", error);
+        await sendMessage(platform, chatId, "❌ هنگام ارسال سؤال تست خطایی رخ داد.");
+    }
+}
+
+async function handleMbtiAnswer(platform, callbackQuery, user, selectedAnswer) {
+    try {
+        const chatId = callbackQuery.message.chat.id;
+        const messageId = callbackQuery.message.message_id;
+        const userId = user.id;
+
+        const state = parseMbtiState(user.mbti_answers);
+
+        if (!state || state.stage !== "testing") {
+            await sendMessage(platform, chatId, "❌ اطلاعات تست نامعتبر است. لطفاً دوباره تست را شروع کنید.");
+            return;
+        }
+
+        const questions = getMbtiQuestions();
+        const currentIndex = state.currentIndex || 0;
+
+        if (currentIndex >= questions.length) {
+            await finishMbtiTest(platform, chatId, userId, state, messageId);
+            return;
+        }
+
+        const currentQuestion = questions[currentIndex];
+        const normalizedAnswer = selectedAnswer.replace("mbti_ans_", "");
+
+        if (!["A", "B"].includes(normalizedAnswer)) {
+            await sendMessage(platform, chatId, "❌ پاسخ نامعتبر است.");
+            return;
+        }
+
+        state.answers[currentQuestion.key] = normalizedAnswer;
+        state.currentIndex = currentIndex + 1;
+        state.mbti_message_id = messageId;
+        state.messageId = messageId;
+
+        await saveMbtiState(userId, state);
+
+        await answerCallback(platform, callbackQuery.id);
+
+        await sendMbtiQuestion(platform, chatId, userId, state, messageId);
+
+    } catch (error) {
+        console.error("handleMbtiAnswer Error:", error);
+        await sendMessage(platform, chatId, "❌ هنگام ثبت پاسخ خطایی رخ داد.");
+    }
+}
+
+
+async function finishMbtiTest(platform, chatId, userId, state) {
+    try {
+        let result;
+
+        if (typeof mbtiTest.calculateResult === "function") {
+            result = mbtiTest.calculateResult(state.answers, state.tieAnswers || {});
+        } else if (typeof mbtiTest.getResult === "function") {
+            result = mbtiTest.getResult(state.answers, state.tieAnswers || {});
+        } else {
+            await sendMessage(
+                platform,
+                chatId,
+                "❌ خطا: تابع calculateResult در فایل mbti_test.js پیدا نشد."
+            );
+            return;
+        }
+
+        if (!result || result.error) {
+            console.error("MBTI Result Error:", result);
+
+            await sendMessage(
+                platform,
+                chatId,
+                "❌ نتیجه تست قابل محاسبه نبود. احتمالاً بعضی پاسخ‌ها ثبت نشده‌اند. لطفاً دوباره تست را انجام بده."
+            );
+
+            await pool.query(
+                "UPDATE users SET step = $1 WHERE id = $2",
+                ["REGISTERED", userId]
+            );
+
+            return;
+        }
+
+        const finalType = result.finalType || result.type || result.mbtiType || "نامشخص";
+
+        state.stage = "finished";
+        state.result = result;
+
+        await pool.query(
+            "UPDATE users SET step = $1, personality_type = $2, mbti_answers = $3 WHERE id = $4",
+            ["REGISTERED", finalType, JSON.stringify(state), userId]
+        );
+
+        let shortText;
+
+        if (typeof mbtiTest.formatShortResult === "function") {
+            shortText = mbtiTest.formatShortResult(result);
+        } else {
+            shortText = `✅ تست شما کامل شد.
+
+🧠 تیپ شخصیتی شما: ${finalType}
+
+برای دریافت جزئیات بیشتر، از دکمه‌های زیر استفاده کن.`;
+        }
+
+        if (!shortText) {
+            shortText = `✅ تست شما کامل شد.
+
+🧠 تیپ شخصیتی شما: ${finalType}
+
+برای دریافت جزئیات بیشتر، از دکمه‌های زیر استفاده کن.`;
+        }
+
+        const kb = {
+            inline_keyboard: [
+                [{ text: "📄 گزارش کامل", callback_data: "mbti_full_report" }],
+                [{ text: "📥 دانلود PDF", callback_data: "mbti_download_pdf" }],
+                [{ text: "🔁 انجام مجدد تست", callback_data: "mbti_pay_start" }],
+                [{ text: "پشتیبانی 🎧", url: "https://t.me/crow_support" }]
+            ]
+        };
+
+        await sendMessage(platform, chatId, shortText, kb);
+    } catch (error) {
+        console.error("Finish MBTI Error:", error);
+        await sendMessage(platform, chatId, "❌ هنگام محاسبه نتیجه تست خطایی رخ داد.");
+    }
+}
+
 
 function createInlineKeyboard(items, prefix, columns = 3) {
     let keyboard = [];
@@ -292,8 +659,7 @@ async function handleJoinCheck(platform, chatId, userId) {
     }
 
     await pool.query('UPDATE users SET step = $1 WHERE id = $2', ['REGISTERED', userId]);
-    
-    // اهدای پاداش تکمیل پروفایل به کاربری که لینک دعوت را داده است
+
     let u = await pool.query('SELECT referrer_id FROM users WHERE id = $1', [userId]);
     if (u.rows.length > 0 && u.rows[0].referrer_id) {
         let refId = u.rows[0].referrer_id;
@@ -361,7 +727,6 @@ async function handleUpdate(platform, req, res) {
             let userResult = await pool.query('SELECT * FROM users WHERE chat_id = $1 AND platform = $2', [chatId, platform]);
 
             if (userResult.rows.length === 0) {
-                // منطق ثبت کد ریفرال برای کاربران جدید
                 let referrerId = null;
                 if (text && text.startsWith('/start ref_')) {
                     const possibleRef = parseInt(text.split('_')[1]);
@@ -370,8 +735,7 @@ async function handleUpdate(platform, req, res) {
 
                 const intUsername = generateInternalUsername();
                 await pool.query('INSERT INTO users (chat_id, platform, step, internal_username, referrer_id) VALUES ($1, $2, $3, $4, $5)', [chatId, platform, 'ASK_GENDER', intUsername, referrerId]);
-                
-                // پاداش اولیه به دعوت کننده
+
                 if (referrerId) {
                     await pool.query('UPDATE users SET coins = coins + 5 WHERE id = $1', [referrerId]);
                     let refUser = await pool.query('SELECT chat_id, platform FROM users WHERE id = $1', [referrerId]);
@@ -400,7 +764,6 @@ async function handleUpdate(platform, req, res) {
                 return;
             }
 
-            // انتظار برای دریافت عکس فیش واریزی
             if (user.step.startsWith('AWAIT_RECEIPT_')) {
                 if (text === "❌ انصراف از خرید" || text === '/start') {
                     await pool.query('UPDATE users SET step = $1 WHERE id = $2', ['REGISTERED', user.id]);
@@ -411,8 +774,7 @@ async function handleUpdate(platform, req, res) {
                     await pool.query('UPDATE users SET step = $1 WHERE id = $2', ['REGISTERED', user.id]);
                     await sendMessage(platform, chatId, "✅ تصویر فیش واریزی شما دریافت شد.\n\nپس از بررسی و تأیید توسط ادمین، سکه‌های بسته خریداری‌شده به حساب شما اضافه خواهد شد.", { remove_keyboard: true });
                     await sendMainMenu(platform, chatId);
-                    
-                    // ارسال فیش به ادمین در صورت تنظیم بودن
+
                     if (ADMIN_CHAT_ID) {
                         const amount = user.step.split('_')[2];
                         const caption = `🧾 **فیش واریزی جدید**\n\n👤 کاربر: ${user.username} (ID: ${user.id})\n💰 بسته درخواستی: ${amount} سکه\nپلتفرم: ${platform}`;
@@ -476,20 +838,16 @@ async function handleUpdate(platform, req, res) {
                 await sendMessage(platform, chatId, "✅ سن شما با موفقیت تغییر کرد.");
                 await sendMainMenu(platform, chatId);
             }
-
             else if (user.step === 'MBTI_TEST_IN_PROGRESS' && text) {
                 if (text === '/start' || text === '❌ انصراف از تست') {
                     await pool.query('UPDATE users SET step = $1 WHERE id = $2', ['REGISTERED', user.id]);
-                    await sendMessage(platform, chatId, "🛑 تست شخصیت‌شناسی لغو شد.", {remove_keyboard: true});
+                    await sendMessage(platform, chatId, "🛑 تست شخصیت‌شناسی لغو شد.", { remove_keyboard: true });
                     await sendMainMenu(platform, chatId);
                 } else {
-                    // در این قسمت باید تابع پاسخ‌دهی از فایل mbti_test.js فراخوانی شود
-                    // مثال برای جایگذاری (بسته به نام دقیق تابعی که در فایل دارید):
-                    // await mbtiTest.handleAnswer(text, user, platform, chatId, pool, sendMessage, pdfGenerator);
+                    await sendMessage(platform, chatId, "لطفاً پاسخ هر سؤال را فقط از طریق دکمه‌های زیر همان سؤال انتخاب کن.");
                 }
                 return;
             }
-
             else if (user.step === 'REGISTERED' && text) {
                 if (text.startsWith('/start')) {
                     await sendMainMenu(platform, chatId);
@@ -500,7 +858,7 @@ async function handleUpdate(platform, req, res) {
                         let partner = partnerResult.rows[0];
                         await pool.query('UPDATE users SET step = $1, partner_id = $2 WHERE id = $3', ['CHATTING', partner.id, user.id]);
                         await pool.query('UPDATE users SET step = $1, partner_id = $2 WHERE id = $3', ['CHATTING', user.id, partner.id]);
-                        
+
                         const chatKeyboard = {
                             keyboard: [
                                 [{ text: "مشاهده پروفایل مخاطب 👤" }, { text: "بازی دوز با مخاطب 🎮" }],
@@ -580,7 +938,7 @@ async function handleUpdate(platform, req, res) {
                             let partner = pRes.rows[0];
                             let profileStr = `👤 **پروفایل مخاطب**\n\n📝 نام: ${partner.username}\n⚧ جنسیت: ${partner.gender}\n🎂 سن: ${partner.age}\n📍 مکان: ${partner.province}\n🧠 تیپ شخصیتی: ${partner.personality_type || 'ثبت نشده'}\n\nبرای مشاهده کامل پروفایل بزنید: /${partner.internal_username}`;
                             await sendMessage(platform, chatId, profileStr);
-                            
+
                             await sendMessage(partner.platform, partner.chat_id, `👀 ${user.username} ( /${user.internal_username} ) پروفایل شما را مشاهده کرد.`);
                         }
                     }
@@ -606,6 +964,124 @@ async function handleUpdate(platform, req, res) {
             if (userResult.rows.length > 0) {
                 const user = userResult.rows[0];
 
+                await answerCallback(platform, query.id);
+
+                if (data === "mbti_cancel_test") {
+    const state = parseMbtiState(user.mbti_answers);
+
+    await pool.query(
+        'UPDATE users SET step = $1, mbti_answers = $2 WHERE id = $3',
+        ['REGISTERED', JSON.stringify({}), user.id]
+    );
+
+    try {
+        if (query.message?.message_id) {
+            await editMessageText(
+                platform,
+                chatId,
+                query.message.message_id,
+                "🛑 تست MBTI لغو شد.",
+                { inline_keyboard: [] }
+            );
+        } else {
+            await sendMessage(platform, chatId, "🛑 تست MBTI لغو شد.");
+        }
+    } catch (e) {
+        await sendMessage(platform, chatId, "🛑 تست MBTI لغو شد.");
+    }
+
+    await answerCallback(platform, query.id);
+    await sendMainMenu(platform, chatId);
+    return; 
+}
+
+if (data === "mbti_cancel_test") {
+    const state = parseMbtiState(user.mbti_answers);
+
+    await pool.query(
+        'UPDATE users SET step = $1, mbti_answers = $2 WHERE id = $3',
+        ['REGISTERED', JSON.stringify({}), user.id]
+    );
+
+    try {
+        if (query.message?.message_id) {
+            await editMessageText(
+                platform,
+                chatId,
+                query.message.message_id,
+                "🛑 تست MBTI لغو شد.",
+                { inline_keyboard: [] }
+            );
+        } else {
+            await sendMessage(platform, chatId, "🛑 تست MBTI لغو شد.");
+        }
+    } catch (e) {
+        await sendMessage(platform, chatId, "🛑 تست MBTI لغو شد.");
+    }
+
+    await answerCallback(platform, query.id);
+    await sendMainMenu(platform, chatId);
+    return;
+}
+
+if (data && data.startsWith("mbti_ans_")) {
+    if (user.step !== "MBTI_TEST_IN_PROGRESS") {
+        await sendMessage(platform, chatId, "❌ در حال حاضر تست فعالی برای شما وجود ندارد.");
+        return;
+    }
+
+    await handleMbtiAnswer(platform, query, user, data);
+    return;
+}
+
+
+                if (data === "mbti_full_report") {
+                    const state = parseMbtiState(user.mbti_answers);
+
+                    if (!state.result) {
+                        await sendMessage(platform, chatId, "❌ گزارش کاملی برای شما پیدا نشد. لطفاً ابتدا تست را انجام دهید.");
+                        return;
+                    }
+
+                    let fullReportText;
+
+                    if (typeof mbtiTest.formatFullReport === "function") {
+                        fullReportText = mbtiTest.formatFullReport(state.result);
+                    } else {
+                        const finalType = state.result.finalType || state.result.type || "نامشخص";
+                        fullReportText = `📄 گزارش کامل تست
+
+تیپ شخصیتی شما: ${finalType}
+
+گزارش کامل برای این تیپ در فایل mbti_test.js قابل تنظیم است.`;
+                    }
+
+                    await sendMessage(platform, chatId, fullReportText);
+                    return;
+                }
+
+                if (data === "mbti_download_pdf") {
+    const state = parseMbtiState(user.mbti_answers);
+
+    if (!state.result) {
+        await sendMessage(platform, chatId, "❌ نتیجه‌ای برای ساخت PDF پیدا نشد. لطفاً ابتدا تست را انجام دهید.");
+        return;
+    }
+
+    try {
+        const filePath = await pdfGenerator.createPdfReport(state.result, user.id);
+
+        await sendDocument(platform, chatId, filePath, "گزارش تست MBTI شما");
+        await sendMessage(platform, chatId, "✅ فایل PDF گزارش شما ارسال شد.");
+
+    } catch (error) {
+        console.error("PDF Error:", error);
+        await sendMessage(platform, chatId, "❌ هنگام ساخت یا ارسال PDF خطایی رخ داد.");
+    }
+
+    return;
+}
+
                 if (user.step === 'ASK_GENDER' || user.step === 'EDIT_GENDER') {
                     const gender = data === 'gender_boy' ? 'پسر' : 'دختر';
                     if (user.step === 'EDIT_GENDER') {
@@ -630,13 +1106,13 @@ async function handleUpdate(platform, req, res) {
                 else if (user.step === 'CHECK_JOIN' && data === 'check_join') {
                     await handleJoinCheck(platform, chatId, user.id);
                 }
-                
+
                 else if (data === 'confirm_end_chat') {
                     if (user.step === 'CHATTING') {
                         await pool.query('UPDATE users SET step = $1, partner_id = NULL WHERE id = $2', ['REGISTERED', user.id]);
                         await sendMessage(platform, chatId, "🔴 چت پایان یافت.", { remove_keyboard: true });
                         await sendMainMenu(platform, chatId);
-                        
+
                         if (user.partner_id) {
                             let pRes = await pool.query('SELECT * FROM users WHERE id = $1', [user.partner_id]);
                             if (pRes.rows.length > 0) {
@@ -652,7 +1128,6 @@ async function handleUpdate(platform, req, res) {
                     await sendMessage(platform, chatId, "✅ انصراف از خروج. به چت خود ادامه دهید...");
                 }
 
-                // بخش تیپ شخصیتی و خرید تست با سکه
                 else if (data === 'mbti_info') {
                     await sendMessage(platform, chatId, MBTI_INFO_TEXT);
                 }
@@ -677,23 +1152,57 @@ async function handleUpdate(platform, req, res) {
                 }
                 else if (data === 'mbti_pay_start') {
                     if (user.coins >= TEST_PRICE_COINS) {
-                        await pool.query('UPDATE users SET coins = coins - $1, step = $2, mbti_answers = $3 WHERE id = $4', [TEST_PRICE_COINS, 'MBTI_TEST_IN_PROGRESS', '[]', user.id]);
-                        
-                        const kbCancel = { keyboard: [[{ text: "❌ انصراف از تست" }]], resize_keyboard: true };
-                        await sendMessage(platform, chatId, `✅ مبلغ ${TEST_PRICE_COINS} سکه از حساب شما کسر شد و تست آغاز گردید.`, kbCancel);
-                        
-                        // در این نقطه، سوال اول تست را توسط فایل تست ارسال کنید
-                        // مثال:
-                        // await mbtiTest.startTest(user, platform, chatId, sendMessage);
+                        await pool.query(
+                            'UPDATE users SET coins = coins - $1, step = $2, mbti_answers = $3 WHERE id = $4',
+                            [
+                                TEST_PRICE_COINS,
+                                'MBTI_TEST_IN_PROGRESS',
+                                JSON.stringify({
+                                    stage: "main",
+                                    current: 1,
+                                    answers: {},
+                                    tieAnswers: {},
+                                    result: null
+                                }),
+                                user.id
+                            ]
+                        );
+
+                        const kbCancel = {
+                            keyboard: [[{ text: "❌ انصراف از تست" }]],
+                            resize_keyboard: true
+                        };
+
+                        await sendMessage(
+                            platform,
+                            chatId,
+                            `✅ مبلغ ${TEST_PRICE_COINS} سکه از حساب شما کسر شد و تست آغاز گردید.`,
+                            kbCancel
+                        );
+
+                        const updatedUserResult = await pool.query(
+                            'SELECT * FROM users WHERE id = $1',
+                            [user.id]
+                        );
+
+                        const updatedUser = updatedUserResult.rows[0];
+
+                        await startMbtiTest(platform, chatId, updatedUser);
                     } else {
-                        await sendMessage(platform, chatId, `❌ موجودی سکه شما برای انجام این تست کافی نیست (نیاز به ${TEST_PRICE_COINS} سکه).\nلطفاً از منوی اصلی، بخش «سکه 🪙» اقدام به دریافت یا خرید سکه کنید.`);
+                        await sendMessage(
+                            platform,
+                            chatId,
+                            `❌ موجودی سکه شما برای انجام این تست کافی نیست.
+
+نیاز به ${TEST_PRICE_COINS} سکه داری.
+لطفاً از منوی اصلی، بخش «سکه 🪙» اقدام به دریافت یا خرید سکه کن.`
+                        );
                     }
                 }
 
-                // بخش سکه (دعوت و خرید)
                 else if (data === 'coin_invite') {
                     const botLink = platform === 'telegram' ? `https://t.me/${BOT_USERNAME}?start=ref_${user.id}` : `https://ble.ir/${BOT_USERNAME}?start=ref_${user.id}`;
-                    
+
                     const inviteText1 = `با دعوت از دوستانت، هم به آن‌ها یک تجربه متفاوت معرفی کن و هم جایزه بگیر 🎉
 
 اینجا می‌تونی بر اساس تیپ شخصیتی‌ات هم‌صحبت پیدا کنی، بازی کنی، جایزه بگیری، در ایردراپ شرکت کنی و توکن دریافت کنی.
@@ -726,7 +1235,7 @@ ${botLink}`;
                     const parts = data.split('_');
                     const coinsAmount = parts[2];
                     const priceK = parts[3];
-                    
+
                     const text = `برای خرید بسته ${coinsAmount} سکه، مبلغ ${priceK} هزار تومان را به شماره کارت زیر واریز کنید و سپس تصویر فیش واریزی را ارسال نمایید.
 
 پس از بررسی و تأیید پرداخت، سکه‌های بسته به حساب شما اضافه خواهد شد.
@@ -743,7 +1252,7 @@ ${botLink}`;
                 else if (data.startsWith('paid_pkg_')) {
                     const coinsAmount = data.split('_')[2];
                     await pool.query('UPDATE users SET step = $1 WHERE id = $2', [`AWAIT_RECEIPT_${coinsAmount}`, user.id]);
-                    
+
                     const text = `لطفاً تصویر فیش واریزی را ارسال کنید.
 
 توجه: در این مرحله فقط ارسال عکس پذیرفته می‌شود.`;
@@ -751,7 +1260,6 @@ ${botLink}`;
                     await sendMessage(platform, chatId, text, cancelKb);
                 }
 
-                // بخش پروفایل
                 else if (data === 'prof_edit_menu') {
                     const genderLimitStr = user.gender_edit_count >= 1 ? '❌ (قفل شد)' : '✏️';
                     const kb = {
@@ -770,7 +1278,7 @@ ${botLink}`;
                 else if (data === 'prof_anon_toggle') {
                     const newValue = user.receive_anon === 1 ? 0 : 1;
                     await pool.query(`UPDATE users SET receive_anon = $1 WHERE id = $2`, [newValue, user.id]);
-                    user.receive_anon = newValue; 
+                    user.receive_anon = newValue;
                     await showProfile(user, platform, chatId);
                 }
                 else if (data === 'prof_anon_link') {
@@ -780,7 +1288,7 @@ ${botLink}`;
                 else if (data === 'prof_balance') {
                     await sendMessage(platform, chatId, `💰 **موجودی شما:**\n\n🪙 سکه: ${user.coins}\n💎 توکن ایردراپ: ${user.tokens}`);
                 }
-                
+
                 else if (data === 'edit_name') {
                     await pool.query('UPDATE users SET step = $1 WHERE id = $2', ['EDIT_USERNAME', user.id]);
                     await sendMessage(platform, chatId, "لطفاً نام کاربری جدید خود را (فقط فارسی) وارد کنید:", { remove_keyboard: true });
@@ -799,10 +1307,9 @@ ${botLink}`;
                     }
                 }
 
-                // جستجوی ویژه
                 else if (data.startsWith('advsearch_')) {
                     const searchMode = data.split('_')[1];
-                    
+
                     if (searchMode === 'personality') {
                         if (!user.personality_type) {
                             await sendMessage(platform, chatId, "❌ شما هنوز تیپ شخصیتی خود را ثبت نکرده‌اید. لطفاً ابتدا از منوی تست شخصیتی اقدام کنید.");
@@ -822,10 +1329,10 @@ ${botLink}`;
                     const parts = data.split('_');
                     const searchMode = parts[1];
                     const targetGenderCode = parts[2];
-                    
+
                     let targetGenderText = "همه";
-                    if(targetGenderCode === 'male') targetGenderText = "پسر";
-                    if(targetGenderCode === 'female') targetGenderText = "دختر";
+                    if (targetGenderCode === 'male') targetGenderText = "پسر";
+                    if (targetGenderCode === 'female') targetGenderText = "دختر";
 
                     let msgText = `🔍 در حال جستجوی کاربران (${searchMode}) با فیلتر جنسیت (${targetGenderText})...`;
 
