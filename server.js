@@ -191,21 +191,56 @@ function generateInternalUsername() {
     return 'USER_' + Math.random().toString(36).substring(2, 9).toUpperCase();
 }
 
-async function sendMessage(platform, chatId, text, replyMarkup = null) {
-    const url = platform === 'telegram' ? TELEGRAM_API : BALE_API;
-    const payload = {
-    chat_id: chatId,
-    text: text,
-    parse_mode: 'Markdown',
-    reply_markup: replyMarkup,
-};
-
+// Helper function to send messages
+async function sendMessage(platform, chatId, text, replyMarkup = null, messageId = null) {
     try {
-        await axios.post(`${url}/sendMessage`, payload);
+        const url = platform === 'telegram' ? TELEGRAM_API : BALE_API;
+        let method = 'sendMessage';
+
+        const payload = {
+            chat_id: chatId,
+            text: text,
+            parse_mode: 'Markdown'
+        };
+
+        // فقط اگر کیبورد وجود داشت اضافه شود
+        if (replyMarkup) {
+            payload.reply_markup = replyMarkup;
+        }
+
+        if (messageId) {
+            method = 'editMessageText';
+            payload.message_id = messageId;
+
+            if (replyMarkup) {
+                payload.reply_markup = replyMarkup;
+            }
+        }
+
+        console.log(`Sending message via ${platform} with method ${method}. ChatId: ${chatId}`);
+
+        const response = await axios.post(`${url}/${method}`, payload);
+
+        return response.data.result;
+
     } catch (error) {
+
+        if (
+            error.response &&
+            error.response.data &&
+            error.response.data.description &&
+            error.response.data.description.includes("message to edit not found") &&
+            messageId
+        ) {
+            console.warn(`Message ${messageId} not found, sending new message.`);
+            return await sendMessage(platform, chatId, text, replyMarkup);
+        }
+
         console.error(`Send Message Error (${platform}):`, error.response?.data || error.message);
+        return null;
     }
 }
+
 // Helper function to send documents
 async function sendDocument(platform, chatId, filePath, caption = null, replyMarkup = null) {
     const url = platform === 'telegram' ? TELEGRAM_API : BALE_API;
