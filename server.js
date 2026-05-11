@@ -204,7 +204,7 @@ async function sendMessage(platform, chatId, text, replyMarkup = null) {
             payload.reply_markup = replyMarkup;
         }
 
-        const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"
@@ -244,7 +244,7 @@ async function editMessageText(platform, chatId, messageId, text, replyMarkup = 
             payload.reply_markup = replyMarkup;
         }
 
-        const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/editMessageText`, {
+        const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/editMessageText`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"
