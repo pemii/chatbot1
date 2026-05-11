@@ -997,8 +997,7 @@ async function handleUpdate(platform, req, res) {
                             [{ text: 'همسن 🎂', callback_data: 'advsearch_age' }],
                             [{ text: 'تیپ شخصیتی 🧠', callback_data: 'advsearch_personality' }]
                         ]
-                    };
-                    await sendMessage(platform, chatId, "🔍 به چه کسی میخوای وصل بشی؟", kb);
+                    };                    await sendMessage(platform, chatId, "🔍 به چه کسی میخوای وصل بشی؟", kb);
                 }
                 else {
                     await sendMessage(platform, chatId, "این بخش در حال توسعه است...");
@@ -1063,8 +1062,7 @@ async function handleUpdate(platform, req, res) {
                         return;
                     }
 
-                    await handleMbtiAnswer(platform, query, user, data);
-
+                    await handleMbtiAnswer(platform, chatId, user, data);
                     return;
                 }
 
@@ -1082,11 +1080,7 @@ async function handleUpdate(platform, req, res) {
                         fullReportText = mbtiTest.formatFullReport(state.result);
                     } else {
                         const finalType = state.result.finalType || state.result.type || "نامشخص";
-                        fullReportText = `📄 گزارش کامل تست
-
-تیپ شخصیتی شما: ${finalType}
-
-گزارش کامل برای این تیپ در فایل mbti_test.js قابل تنظیم است.`;
+                        fullReportText = `📄 گزارش کامل تست\n\nتیپ شخصیتی شما: ${finalType}\n\nگزارش کامل برای این تیپ در فایل mbti_test.js قابل تنظیم است.`;
                     }
 
                     await sendMessage(platform, chatId, fullReportText);
@@ -1107,18 +1101,12 @@ async function handleUpdate(platform, req, res) {
                         await sendMessage(
                             platform,
                             chatId,
-                            `✅ فایل PDF ساخته شد.
-
-مسیر فایل روی سرور:
-${filePath}
-
-برای ارسال مستقیم PDF به تلگرام، باید تابع sendDocument هم اضافه شود.`
+                            `✅ فایل PDF ساخته شد.\n\nمسیر فایل روی سرور:\n${filePath}\n\nبرای ارسال مستقیم PDF به تلگرام، باید تابع sendDocument هم اضافه شود.`
                         );
                     } catch (error) {
                         console.error("PDF Error:", error);
                         await sendMessage(platform, chatId, "❌ هنگام ساخت PDF خطایی رخ داد.");
                     }
-
                     return;
                 }
 
@@ -1130,6 +1118,7 @@ ${filePath}
                         await sendMainMenu(platform, chatId);
                     } else {
                         await pool.query('UPDATE users SET gender = $1, step = $2 WHERE id = $3', [gender, 'ASK_USERNAME', user.id]);
+
                         await sendMessage(platform, chatId, `✅ جنسیت ثبت شد.\nیک نام کاربری فارسی انتخاب کن:`);
                     }
                 }
