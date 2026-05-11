@@ -3,6 +3,8 @@ const express = require('express');
 const axios = require('axios');
 const { Pool } = require('pg');
 const locations = require('./locations');
+const fs = require("fs");
+const FormData = require("form-data");
 
 // اضافه شدن فایل‌های مدیریت تست شخصیتی و PDF
 const mbtiTest = require('./mbti_test');
@@ -113,7 +115,7 @@ const MBTI_BUY_TEXT = `تا حالا برات سوال شده چرا بعضی ت
 زمان انجام: ۱۰ تا ۱۵ دقیقه
 هزینه: ${TEST_PRICE_COINS} سکه 🪙
 
-برای شروع تست، پرداخت را انجام بده. بعد از پرداخت، لینک تست برایت فعال می‌شود.`;
+برای شروع تست، پرداخت را انجام بده. بعد از پرداخت، لینک تست فعال می‌شود.`;
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
@@ -189,15 +191,88 @@ function generateInternalUsername() {
 }
 
 async function sendMessage(platform, chatId, text, replyMarkup = null) {
-    const url = platform === 'telegram' ? TELEGRAM_API : BALE_API;
-    const payload = { chat_id: chatId, text: text };
-    if (replyMarkup) { payload.reply_markup = replyMarkup; }
     try {
-        await axios.post(`${url}/sendMessage`, payload);
+        if (platform !== "telegram") {
+            return null;
+        }
+
+        const payload = {
+            chat_id: chatId,
+            text,
+            parse_mode: "HTML"
+        };
+
+        if (replyMarkup) {
+            payload.reply_markup = replyMarkup;
+        }
+
+        const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+
+        if (!data.ok) {
+            console.error("Telegram sendMessage error:", data);
+            return null;
+        }
+
+        return data.result;
     } catch (error) {
-        console.error(`Send Message Error (${platform}):`, error.response?.data || error.message);
+        console.error("sendMessage Error:", error);
+        return null;
     }
 }
+async function sendDocument(platform, chatId, filePath, caption = "") {
+    try {
+        if (!fs.existsSync(filePath)) {
+            console.error("File not found:", filePath);
+            await sendMessage(platform, chatId, "❌ فایل PDF روی سرور پیدا نشد.");
+            return null;
+        }
+
+        let url;
+
+        if (platform === "telegram") {
+            url = `${TELEGRAM_API}/sendDocument`;
+        } else if (platform === "bale") {
+            url = `${BALE_API}/sendDocument`;
+        } else {
+            console.error("Unknown platform in sendDocument:", platform);
+            return null;
+        }
+
+        const form = new FormData();
+        form.append("chat_id", chatId);
+        form.append("document", fs.createReadStream(filePath));
+
+        if (caption) {
+            form.append("caption", caption);
+            form.append("parse_mode", "HTML");
+        }
+
+        const response = await axios.post(url, form, {
+            headers: form.getHeaders()
+        });
+
+        if (response.data && response.data.ok) {
+            return response.data.result;
+        }
+
+        console.error("sendDocument API error:", response.data);
+        await sendMessage(platform, chatId, "❌ ارسال فایل PDF با خطا مواجه شد.");
+        return null;
+    } catch (error) {
+        console.error("sendDocument Error:", error.response?.data || error.message);
+        await sendMessage(platform, chatId, "❌ هنگام ارسال فایل PDF خطایی رخ داد.");
+        return null;
+    }
+}
+
 
 async function sendPhoto(platform, chatId, photoId, caption, replyMarkup = null) {
     const url = platform === 'telegram' ? TELEGRAM_API : BALE_API;
@@ -327,94 +402,217 @@ async function saveMbtiState(userId, state) {
 }
 
 async function startMbtiTest(platform, chatId, user) {
-    const questions = getMbtiQuestions();
+    try {
+        const userId = user.id;
 
-    if (!questions || questions.length === 0) {
-        await sendMessage(
-            platform,
-            chatId,
-            "❌ خطا: سوالات تست در فایل mbti_test.js پیدا نشد. لطفاً خروجی این فایل را بررسی کنید."
+        const state = {
+            stage: "testing",
+            currentIndex: 0,
+            answers: {},
+            tieAnswers: {},
+            messageId: null,
+            mbti_message_id: null,
+            startedAt: new Date().toISOString()
+        };
+
+        await pool.query(
+            "UPDATE users SET step = $1, mbti_answers = $2 WHERE id = $3",
+            ["MBTI_TESTING", JSON.stringify(state), userId]
         );
-        return;
+
+        await sendMbtiQuestion(platform, chatId, userId, state);
+    } catch (error) {
+        console.error("startMbtiTest Error:", error);
+        await sendMessage(platform, chatId, "❌ شروع تست با خطا مواجه شد.");
     }
-
-    const state = {
-        stage: "main",
-        current: 1,
-        answers: {},
-        tieAnswers: {},
-        result: null
-    };
-
-    await pool.query(
-        "UPDATE users SET step = $1, mbti_answers = $2 WHERE id = $3",
-        ["MBTI_TEST_IN_PROGRESS", JSON.stringify(state), user.id]
-    );
-
-    await sendMbtiQuestion(platform, chatId, user.id, state);
 }
 
-async function sendMbtiQuestion(platform, chatId, userId, state) {
-    const questions = getMbtiQuestions();
-    const current = state.current || 1;
-    const index = current - 1;
-    const question = questions[index];
 
-    if (!question) {
-        await finishMbtiTest(platform, chatId, userId, state);
-        return;
+async function sendMbtiQuestion(platform, chatId, userId, state, messageId = null) {
+    try {
+        const questions = getMbtiQuestions();
+
+        const currentIndex = state.currentIndex || 0;
+
+        if (currentIndex >= questions.length) {
+            await finishMbtiTest(platform, chatId, userId, state, messageId);
+            return;
+        }
+
+        const question = questions[currentIndex];
+
+        const questionText = getQuestionText(question);
+        const optionA = getOptionA(question);
+        const optionB = getOptionB(question);
+
+        const text = `🧠 <b>تست MBTI</b>
+
+سؤال ${currentIndex + 1} از ${questions.length}
+
+${questionText}
+
+لطفاً یکی از گزینه‌های زیر را انتخاب کن:`;
+
+        const keyboard = {
+            inline_keyboard: [
+                [
+                    {
+                        text: `الف) ${optionA}`,
+                        callback_data: "mbti_ans_A"
+                    }
+                ],
+                [
+                    {
+                        text: `ب) ${optionB}`,
+                        callback_data: "mbti_ans_B"
+                    }
+                ]
+            ]
+        };
+
+        let sentOrEditedMessage = null;
+
+        if (messageId) {
+            sentOrEditedMessage = await editMessageText(
+                platform,
+                chatId,
+                messageId,
+                text,
+                keyboard
+            );
+
+            if (!sentOrEditedMessage) {
+                // اگر ویرایش پیام به هر دلیل شکست خورد، یک پیام جدید بفرست
+                sentOrEditedMessage = await sendMessage(platform, chatId, text, keyboard);
+            }
+        } else if (state.messageId || state.mbti_message_id) {
+            const savedMessageId = state.messageId || state.mbti_message_id;
+
+            sentOrEditedMessage = await editMessageText(
+                platform,
+                chatId,
+                savedMessageId,
+                text,
+                keyboard
+            );
+
+            if (!sentOrEditedMessage) {
+                sentOrEditedMessage = await sendMessage(platform, chatId, text, keyboard);
+            }
+        } else {
+            sentOrEditedMessage = await sendMessage(platform, chatId, text, keyboard);
+        }
+
+        if (sentOrEditedMessage && sentOrEditedMessage.message_id) {
+            state.messageId = sentOrEditedMessage.message_id;
+            state.mbti_message_id = sentOrEditedMessage.message_id;
+
+            await pool.query(
+                "UPDATE users SET mbti_answers = $1 WHERE id = $2",
+                [JSON.stringify(state), userId]
+            );
+        }
+    } catch (error) {
+        console.error("sendMbtiQuestion Error:", error);
+        await sendMessage(platform, chatId, "❌ هنگام ارسال سؤال تست خطایی رخ داد.");
     }
-
-    const qId = getQuestionId(question, index);
-    const qText = getQuestionText(question, index);
-    const optionA = getOptionA(question);
-    const optionB = getOptionB(question);
-
-    const text = `🧠 تست شخصیت‌شناسی MBTI
-
-سؤال ${current} از ${questions.length}
-
-${qText}
-
-یکی از گزینه‌ها را انتخاب کن:`;
-
-    const kb = {
-        inline_keyboard: [
-            [{ text: `الف) ${optionA}`, callback_data: `mbti_ans_${qId}_A` }],
-            [{ text: `ب) ${optionB}`, callback_data: `mbti_ans_${qId}_B` }]
-        ]
-    };
-
-    await sendMessage(platform, chatId, text, kb);
 }
 
-async function handleMbtiAnswer(platform, chatId, user, data) {
-    const questions = getMbtiQuestions();
 
-    if (!questions || questions.length === 0) {
-        await sendMessage(platform, chatId, "❌ خطا: سوالات تست پیدا نشد.");
-        return;
+async function handleMbtiAnswer(platform, callbackQuery, user, selectedAnswer) {
+    try {
+        const chatId = callbackQuery.message.chat.id;
+        const messageId = callbackQuery.message.message_id;
+        const userId = user.id;
+
+        await answerCallback(platform, callbackQuery.id);
+
+        const state = parseMbtiState(user.mbti_answers);
+
+        if (!state || state.stage !== "testing") {
+            await editMessageText(
+                platform,
+                chatId,
+                messageId,
+                "❌ وضعیت تست پیدا نشد یا تست به پایان رسیده است."
+            );
+            return;
+        }
+
+        const questions = getMbtiQuestions();
+
+        const currentIndex = state.currentIndex || 0;
+
+        if (currentIndex >= questions.length) {
+            await finishMbtiTest(platform, chatId, userId, state, messageId);
+            return;
+        }
+
+        const questionNumber = currentIndex + 1;
+
+        state.answers[questionNumber] = selectedAnswer;
+        state.currentIndex = currentIndex + 1;
+        state.messageId = messageId;
+        state.mbti_message_id = messageId;
+        state.updatedAt = new Date().toISOString();
+
+        await pool.query(
+            "UPDATE users SET mbti_answers = $1 WHERE id = $2",
+            [JSON.stringify(state), userId]
+        );
+
+        if (state.currentIndex >= questions.length) {
+            await finishMbtiTest(platform, chatId, userId, state, messageId);
+        } else {
+            await sendMbtiQuestion(platform, chatId, userId, state, messageId);
+        }
+    } catch (error) {
+        console.error("handleMbtiAnswer Error:", error);
+
+        try {
+            const chatId = callbackQuery.message.chat.id;
+            await sendMessage(platform, chatId, "❌ هنگام ثبت پاسخ خطایی رخ داد.");
+        } catch (_) {}
     }
+}
 
-    const state = parseMbtiState(user.mbti_answers);
-    const parts = data.split("_");
-    const questionId = parts[2];
-    const answer = parts[3];
+async function editMessageText(platform, chatId, messageId, text, replyMarkup = null) {
+    try {
+        if (platform !== "telegram") {
+            // اگر پلتفرم دیگری داری، اینجا باید متد ویرایش پیام همان پلتفرم اضافه شود
+            return false;
+        }
 
-    if (!["A", "B"].includes(answer)) {
-        await sendMessage(platform, chatId, "❌ پاسخ نامعتبر است.");
-        return;
-    }
+        const payload = {
+            chat_id: chatId,
+            message_id: messageId,
+            text,
+            parse_mode: "HTML"
+        };
 
-    state.answers[questionId] = answer;
-    state.current = (state.current || 1) + 1;
+        if (replyMarkup) {
+            payload.reply_markup = replyMarkup;
+        }
 
-    await saveMbtiState(user.id, state);
+        const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/editMessageText`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
 
-    if (state.current > questions.length) {
-        await finishMbtiTest(platform, chatId, user.id, state);
-    } else {
-        await sendMbtiQuestion(platform, chatId, user.id, state);
+        const data = await response.json();
+
+        if (!data.ok) {
+            console.error("Telegram editMessageText error:", data);
+            return false;
+        }
+
+        return data.result;
+    } catch (error) {
+        console.error("editMessageText Error:", error);
+        return false;
     }
 }
 
@@ -495,6 +693,51 @@ async function finishMbtiTest(platform, chatId, userId, state) {
     } catch (error) {
         console.error("Finish MBTI Error:", error);
         await sendMessage(platform, chatId, "❌ هنگام محاسبه نتیجه تست خطایی رخ داد.");
+    }
+}
+async function sendDocument(platform, chatId, filePath, caption = '') {
+    try {
+        if (!fs.existsSync(filePath)) {
+            console.error('File not found:', filePath);
+            await sendMessage(platform, chatId, '❌ فایل PDF روی سرور پیدا نشد.');
+            return null;
+        }
+
+        let url;
+
+        if (platform === 'telegram') {
+            url = `${TELEGRAM_API}/sendDocument`;
+        } else if (platform === 'bale') {
+            url = `${BALE_API}/sendDocument`;
+        } else {
+            console.error('Unknown platform in sendDocument:', platform);
+            return null;
+        }
+
+        const form = new FormData();
+        form.append('chat_id', chatId);
+        form.append('document', fs.createReadStream(filePath));
+
+        if (caption) {
+            form.append('caption', caption);
+            form.append('parse_mode', 'HTML');
+        }
+
+        const response = await axios.post(url, form, {
+            headers: form.getHeaders()
+        });
+
+        if (response.data && response.data.ok) {
+            return response.data.result;
+        }
+
+        console.error('sendDocument API error:', response.data);
+        await sendMessage(platform, chatId, '❌ ارسال فایل PDF با خطا مواجه شد.');
+        return null;
+    } catch (error) {
+        console.error('sendDocument Error:', error.response?.data || error.message);
+        await sendMessage(platform, chatId, '❌ هنگام ارسال فایل PDF خطایی رخ داد.');
+        return null;
     }
 }
 
@@ -896,58 +1139,66 @@ async function handleUpdate(platform, req, res) {
                 }
 
                 if (data === "mbti_full_report") {
-                    const state = parseMbtiState(user.mbti_answers);
+                 await answerCallback(platform, callbackQuery.id);
 
-                    if (!state.result) {
-                        await sendMessage(platform, chatId, "❌ گزارش کاملی برای شما پیدا نشد. لطفاً ابتدا تست را انجام دهید.");
-                        return;
-                    }
+                const state = parseMbtiState(user.mbti_answers);
 
-                    let fullReportText;
+                    if (!state || !state.result) {
+                 await sendMessage(platform, chatId, "❌ گزارش کاملی برای شما پیدا نشد. لطفاً ابتدا تست را انجام دهید.");
+                 return;
+                }
+    
+    let fullReportText;
 
-                    if (typeof mbtiTest.formatFullReport === "function") {
-                        fullReportText = mbtiTest.formatFullReport(state.result);
-                    } else {
-                        const finalType = state.result.finalType || state.result.type || "نامشخص";
-                        fullReportText = `📄 گزارش کامل تست
+    if (typeof mbtiTest.formatFullReport === "function") {
+        fullReportText = mbtiTest.formatFullReport(state.result);
+    } else {
+        const finalType = state.result.finalType || state.result.type || "نامشخص";
+        fullReportText = `📄 گزارش کامل تست
 
 تیپ شخصیتی شما: ${finalType}
 
 گزارش کامل برای این تیپ در فایل mbti_test.js قابل تنظیم است.`;
-                    }
+    }
 
-                    await sendMessage(platform, chatId, fullReportText);
-                    return;
-                }
+    await sendMessage(platform, chatId, fullReportText);
+    return;
+}
 
-                if (data === "mbti_download_pdf") {
-                    const state = parseMbtiState(user.mbti_answers);
 
-                    if (!state.result) {
-                        await sendMessage(platform, chatId, "❌ نتیجه‌ای برای ساخت PDF پیدا نشد. لطفاً ابتدا تست را انجام دهید.");
-                        return;
-                    }
+               if (data === "mbti_download_pdf") {
+    await answerCallback(platform, callbackQuery.id, "در حال ساخت PDF...");
 
-                    try {
-                        const filePath = await pdfGenerator.createPdfReport(state.result, user.id);
+    const state = parseMbtiState(user.mbti_answers);
 
-                        await sendMessage(
-                            platform,
-                            chatId,
-                            `✅ فایل PDF ساخته شد.
+    if (!state || !state.result) {
+        await sendMessage(platform, chatId, "❌ نتیجه‌ای برای ساخت PDF پیدا نشد. لطفاً ابتدا تست را انجام دهید.");
+        return;
+    }
 
-مسیر فایل روی سرور:
-${filePath}
+    try {
+        const filePath = await pdfGenerator.createPdfReport(state.result, user.id);
 
-برای ارسال مستقیم PDF به تلگرام، باید تابع sendDocument هم اضافه شود.`
-                        );
-                    } catch (error) {
-                        console.error("PDF Error:", error);
-                        await sendMessage(platform, chatId, "❌ هنگام ساخت PDF خطایی رخ داد.");
-                    }
+        if (!filePath) {
+            await sendMessage(platform, chatId, "❌ ساخت فایل PDF با خطا مواجه شد.");
+            return;
+        }
 
-                    return;
-                }
+        await sendDocument(
+            platform,
+            chatId,
+            filePath,
+            "✅ گزارش PDF تست MBTI شما آماده شد."
+        );
+
+        return;
+    } catch (error) {
+        console.error("mbti_download_pdf Error:", error);
+        await sendMessage(platform, chatId, "❌ هنگام ساخت یا ارسال فایل PDF خطایی رخ داد.");
+        return;
+    }
+}
+
 
                 if (user.step === 'ASK_GENDER' || user.step === 'EDIT_GENDER') {
                     const gender = data === 'gender_boy' ? 'پسر' : 'دختر';
