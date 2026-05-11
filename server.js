@@ -1139,7 +1139,8 @@ async function handleUpdate(platform, req, res) {
                 }
 
                 if (data === "mbti_full_report") {
-                 await answerCallback(platform, callbackQuery.id);
+                 await answerCallback(platform, query.id);
+
 
                 const state = parseMbtiState(user.mbti_answers);
 
@@ -1167,7 +1168,7 @@ async function handleUpdate(platform, req, res) {
 
 
                if (data === "mbti_download_pdf") {
-    await answerCallback(platform, callbackQuery.id, "در حال ساخت PDF...");
+    await answerCallback(platform, query.id, "در حال ساخت PDF...");
 
     const state = parseMbtiState(user.mbti_answers);
 
