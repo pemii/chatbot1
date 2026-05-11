@@ -193,8 +193,13 @@ function generateInternalUsername() {
 
 async function sendMessage(platform, chatId, text, replyMarkup = null) {
     const url = platform === 'telegram' ? TELEGRAM_API : BALE_API;
-    const payload = { chat_id: chatId, text: text };
-    if (replyMarkup) { payload.reply_markup = replyMarkup; }
+    const payload = {
+    chat_id: chatId,
+    text: text,
+    parse_mode: 'Markdown',
+    reply_markup: replyMarkup,
+};
+
     try {
         await axios.post(`${url}/sendMessage`, payload);
     } catch (error) {
